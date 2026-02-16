@@ -13,19 +13,19 @@ const Footer = () => {
             designs.
           </p>
           <div className="social-icons">
-            <a href="#facebook" aria-label="Facebook">
+            <a href="https://www.facebook.com/shopwithnino" aria-label="Facebook">
               <img
                 src={require("../assets/facebook-icon.svg").default}
                 alt="Facebook"
               />
             </a>
-            <a href="#instagram" aria-label="Instagram">
+            <a href="https://www.instagram.com/shop_with_nino?igsh=MTNudHdudnVnMDJvaQ==" aria-label="Instagram">
               <img
                 src={require("../assets/instagram-icon.svg").default}
                 alt="Instagram"
               />
             </a>
-            <a href="#tiktok" aria-label="TikTok">
+            <a href="https://www.tiktok.com/@shopwith_nino?_r=1&_t=ZS-93xNsLH49VV" aria-label="TikTok">
               <img
                 src={require("../assets/tiktok-icon.svg").default}
                 alt="TikTok"
@@ -40,9 +40,9 @@ const Footer = () => {
             <li>
               <Link to="/products">Shop</Link>
             </li>
-            <li>
+            {/* <li>
               <Link to="/customization">Customize</Link>
-            </li>
+            </li> */}
             <li>
               <Link to="/track-order">Track Order</Link>
             </li>

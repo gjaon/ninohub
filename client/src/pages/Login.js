@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
-import { setUser } from "../redux/slices/userSlice";
+import { setError, setLoading, setUser } from "../redux/slices/userSlice";
+import { registerUser, loginUser } from "../services/auth";
 import "./Login.css";
 
 const Login = () => {
@@ -27,8 +28,10 @@ const Login = () => {
     });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    dispatch(setLoading(true));
+    dispatch(setError(null));
 
     if (isSignup) {
       // Signup validation
@@ -39,40 +42,61 @@ const Login = () => {
         !formData.confirmPassword
       ) {
         toast.error("Please fill in all fields");
+        dispatch(setLoading(false));
         return;
       }
       if (formData.password !== formData.confirmPassword) {
         toast.error("Passwords do not match");
+        dispatch(setLoading(false));
         return;
       }
       if (formData.password.length < 6) {
         toast.error("Password must be at least 6 characters");
+        dispatch(setLoading(false));
         return;
       }
 
-      // For now, just simulate signup (will be connected to backend later)
-      const userData = {
-        name: formData.name,
-        email: formData.email,
-      };
-      dispatch(setUser(userData));
-      toast.success(`Welcome, ${formData.name}! Account created successfully.`);
-      navigate(from, { replace: true });
+      try {
+        const response = await registerUser({
+          name: formData.name,
+          email: formData.email,
+          password: formData.password,
+        });
+        dispatch(setUser(response));
+        toast.success(
+          `Welcome, ${response.name}! Account created successfully.`
+        );
+        navigate(from, { replace: true });
+      } catch (error) {
+        const message = error.message || "Signup failed. Please try again.";
+        dispatch(setError(message));
+        toast.error(message);
+      } finally {
+        dispatch(setLoading(false));
+      }
     } else {
       // Login validation
       if (!formData.email || !formData.password) {
         toast.error("Please enter email and password");
+        dispatch(setLoading(false));
         return;
       }
 
-      // For now, just simulate login (will be connected to backend later)
-      const userData = {
-        name: formData.email.split("@")[0],
-        email: formData.email,
-      };
-      dispatch(setUser(userData));
-      toast.success("Logged in successfully!");
-      navigate(from, { replace: true });
+      try {
+        const response = await loginUser({
+          email: formData.email,
+          password: formData.password,
+        });
+        dispatch(setUser(response));
+        toast.success("Logged in successfully!");
+        navigate(from, { replace: true });
+      } catch (error) {
+        const message = error.message || "Login failed. Please try again.";
+        dispatch(setError(message));
+        toast.error(message);
+      } finally {
+        dispatch(setLoading(false));
+      }
     }
   };
 

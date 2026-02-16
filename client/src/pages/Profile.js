@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { Link, useNavigate } from "react-router-dom";
-import { logout } from "../redux/slices/userSlice";
+import { logout, setUser } from "../redux/slices/userSlice";
+import { logoutUser, updateUser } from "../services/auth";
 import { toast } from "sonner";
 import "./Profile.css";
 
@@ -10,6 +11,12 @@ const Profile = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("orders");
+  const [formData, setFormData] = useState({
+    name: currentUser?.name || "",
+    phone: currentUser?.phone || "+234",
+    bio: currentUser?.bio || "",
+  });
+  const [isSaving, setIsSaving] = useState(false);
 
   // Mock user orders
   const mockOrders = [
@@ -41,10 +48,53 @@ const Profile = () => {
     },
   ];
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await logoutUser();
+    } catch (error) {
+      toast.error("Logout failed. Please try again.");
+      return;
+    }
+
     dispatch(logout());
     toast.success("Logged out successfully");
     navigate("/");
+  };
+
+  // Update form data when currentUser changes
+  React.useEffect(() => {
+    if (currentUser) {
+      setFormData({
+        name: currentUser.name || "",
+        phone: currentUser.phone || "+234",
+        bio: currentUser.bio || "",
+      });
+    }
+  }, [currentUser]);
+
+  const handleFormChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
+  const handleSaveSettings = async () => {
+    setIsSaving(true);
+
+    try {
+      const response = await updateUser(formData);
+      dispatch(setUser(response));
+      toast.success("Profile updated successfully!");
+    } catch (error) {
+      const message =
+        error.response?.data?.message ||
+        "Failed to update profile. Please try again.";
+      toast.error(message);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   if (!currentUser) {
@@ -221,13 +271,18 @@ const Profile = () => {
               <div className="settings-form">
                 <div className="form-group">
                   <label>Full Name</label>
-                  <input type="text" defaultValue={currentUser.name} />
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleFormChange}
+                  />
                 </div>
                 <div className="form-group">
                   <label>Email Address</label>
                   <input
                     type="email"
-                    defaultValue={currentUser.email}
+                    value={currentUser?.email || ""}
                     disabled
                   />
                 </div>
@@ -235,14 +290,26 @@ const Profile = () => {
                   <label>Phone Number</label>
                   <input
                     type="tel"
-                    defaultValue={currentUser.phone || "+234"}
+                    name="phone"
+                    value={formData.phone}
+                    onChange={handleFormChange}
                   />
                 </div>
                 <div className="form-group">
                   <label>Bio</label>
-                  <textarea defaultValue={currentUser.bio || ""}></textarea>
+                  <textarea
+                    name="bio"
+                    value={formData.bio}
+                    onChange={handleFormChange}
+                  ></textarea>
                 </div>
-                <button className="btn-save">Save Changes</button>
+                <button
+                  className="btn-save"
+                  onClick={handleSaveSettings}
+                  disabled={isSaving}
+                >
+                  {isSaving ? "Saving..." : "Save Changes"}
+                </button>
               </div>
             </div>
           )}

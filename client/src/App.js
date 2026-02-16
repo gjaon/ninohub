@@ -7,8 +7,10 @@ import {
 } from "react-router-dom";
 import { useDispatch } from "react-redux";
 import { setProducts } from "./redux/slices/productsSlice";
-import Navbar from "./components/Navbar";
-import Footer from "./components/Footer";
+import { setUser } from "./redux/slices/userSlice";
+import { getUser } from "./services/auth";
+import { LaunchProvider } from "./context/LaunchContext";
+import Layout from "./components/Layout";
 import Home from "./pages/Home";
 import Products from "./pages/Products";
 import ProductDetail from "./pages/ProductDetail";
@@ -21,6 +23,7 @@ import NotFound from "./pages/NotFound";
 import TrackOrder from "./pages/TrackOrder";
 import ContactUs from "./pages/ContactUs";
 import Profile from "./pages/Profile";
+import WaitlistForm from "./pages/WaitlistForm";
 import "./App.css";
 
 // Scroll to top on route change
@@ -1653,12 +1656,28 @@ function App() {
     dispatch(setProducts(sampleProducts));
   }, [dispatch]);
 
+  // Restore user session on app load
+  useEffect(() => {
+    const restoreUserSession = async () => {
+      try {
+        const response = await getUser();
+        if (response) {
+          dispatch(setUser(response));
+        }
+      } catch (error) {
+        // User not logged in or session expired, this is expected
+        console.log("User not authenticated");
+      }
+    };
+
+    restoreUserSession();
+  }, [dispatch]);
+
   return (
-    <Router>
-      <ScrollToTop />
-      <div className="App">
-        <Navbar />
-        <main className="main-content">
+    <LaunchProvider>
+      <Router>
+        <ScrollToTop />
+        <Layout>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/products" element={<Products />} />
@@ -1672,12 +1691,12 @@ function App() {
             <Route path="/track-order" element={<TrackOrder />} />
             <Route path="/contact" element={<ContactUs />} />
             <Route path="/profile" element={<Profile />} />
+            <Route path="/waitlist" element={<WaitlistForm />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
-        </main>
-        <Footer />
-      </div>
-    </Router>
+        </Layout>
+      </Router>
+    </LaunchProvider>
   );
 }
 

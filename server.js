@@ -6,6 +6,7 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const path = require("path");
 const userRoute = require("./routes/userRoutes");
+const waitlistRoute = require("./routes/waitlistRoutes");
 const errorHandler = require("./middleware/errorMiddleware");
 
 const app = express();
@@ -15,7 +16,33 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false }));
 app.use(bodyParser.json());
-app.use(cors());
+const defaultOrigins = ["http://localhost:3000", "http://localhost:3005"];
+const envOrigins = (process.env.CLIENT_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
+const isProduction =
+  process.env.NODE_ENV === "production" ||
+  process.env.NODE_ENV === "staging";
+
+const corsOptions = isProduction
+  ? {
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+        return callback(new Error("Not allowed by CORS"));
+      },
+      credentials: true,
+    }
+  : {
+      origin: true,
+      credentials: true,
+    };
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -33,6 +60,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Routes Middleware
 app.use("/api/users", userRoute);
+app.use("/api/waitlist", waitlistRoute);
 
 // Routes
 app.get("/api", (req, res) => {

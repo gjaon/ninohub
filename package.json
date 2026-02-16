@@ -19,6 +19,7 @@
   "author": "Jcodes",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.13.5",
     "bcryptjs": "^3.0.3",
     "body-parser": "^2.2.0",
     "cookie-parser": "^1.4.7",

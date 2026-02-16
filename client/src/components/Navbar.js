@@ -51,10 +51,13 @@ const Navbar = () => {
               Products
             </Link>
           </li>
-          <li>
+          {/* <li>
             <Link to="/customization" onClick={closeMobileMenu}>
               Customization
             </Link>
+          </li> */}
+          <li>
+            <Link to="/track-order">Track Order</Link>
           </li>
           {isAuthenticated ? (
             <li>

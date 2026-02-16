@@ -1,7 +1,7 @@
 {
   "files": {
-    "main.css": "/static/css/main.2b353bdc.css",
-    "main.js": "/static/js/main.fbc372a2.js",
+    "main.css": "/static/css/main.2631d32b.css",
+    "main.js": "/static/js/main.b5e782db.js",
     "static/js/453.d456ce70.chunk.js": "/static/js/453.d456ce70.chunk.js",
     "static/media/necklaces-17.jpg": "/static/media/necklaces-17.eba7ce113180f103bcdc.jpg",
     "static/media/other-03.jpg": "/static/media/other-03.e507c5a6c78c51163aab.jpg",
@@ -114,6 +114,7 @@
     "static/media/rings-19.jpg": "/static/media/rings-19.8ae70b4fcf9379b5f2f9.jpg",
     "static/media/necklaces-25.jpg": "/static/media/necklaces-25.4d47efa7aec7830ad966.jpg",
     "static/media/necklaces-22.jpg": "/static/media/necklaces-22.e0c9fb5db4e857919792.jpg",
+    "static/media/sales1.png": "/static/media/sales1.c623f37a10c94fb2e7ea.png",
     "static/media/necklaces-28.jpg": "/static/media/necklaces-28.ee96de670f550f3a352c.jpg",
     "static/media/watches-86.jpg": "/static/media/watches-86.4d87ff49e47c932a66d6.jpg",
     "static/media/bracelets-10.jpg": "/static/media/bracelets-10.7107f9b0cad2d8801799.jpg",
@@ -141,6 +142,7 @@
     "static/media/watches-69.jpg": "/static/media/watches-69.0d8df2ff381154be2c77.jpg",
     "static/media/watches-97.jpg": "/static/media/watches-97.cda905ab5bd8713d6904.jpg",
     "static/media/IMG_E7287.JPG": "/static/media/IMG_E7287.9aee3e9b316283deb504.JPG",
+    "static/media/sales2.png": "/static/media/sales2.a89ee42e23db05044d44.png",
     "static/media/watches-51.jpg": "/static/media/watches-51.d19a829f75cfb19ede4f.jpg",
     "static/media/watches-68.jpg": "/static/media/watches-68.5f58c32668f4f06de478.jpg",
     "static/media/watches-65.jpg": "/static/media/watches-65.0efd23894e28a31f6962.jpg",
@@ -180,6 +182,7 @@
     "static/media/watches-09.jpg": "/static/media/watches-09.0c1c4f59b6d06510a020.jpg",
     "static/media/watches-110.jpg": "/static/media/watches-110.922c6fca9cf4b49da886.jpg",
     "static/media/watches-03.jpg": "/static/media/watches-03.88f3df4965e726c21a9e.jpg",
+    "static/media/sales3.jpeg": "/static/media/sales3.36bba774fd043f1ada41.jpeg",
     "static/media/custom-05.jpg": "/static/media/custom-05.141045189bd1394b7400.jpg",
     "static/media/watches-109.jpg": "/static/media/watches-109.edbe8a1eccae8ec4746c.jpg",
     "static/media/watches-112.jpg": "/static/media/watches-112.4acbfd2ca0ae2f063842.jpg",
@@ -240,12 +243,12 @@
     "static/media/tiktok-icon.svg": "/static/media/tiktok-icon.ddfe6c03cfa04a4416c716517123f94e.svg",
     "static/media/facebook-icon.svg": "/static/media/facebook-icon.89fde62f458562dcfdcdae21d1a07c18.svg",
     "index.html": "/index.html",
-    "main.2b353bdc.css.map": "/static/css/main.2b353bdc.css.map",
-    "main.fbc372a2.js.map": "/static/js/main.fbc372a2.js.map",
+    "main.2631d32b.css.map": "/static/css/main.2631d32b.css.map",
+    "main.b5e782db.js.map": "/static/js/main.b5e782db.js.map",
     "453.d456ce70.chunk.js.map": "/static/js/453.d456ce70.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.2b353bdc.css",
-    "static/js/main.fbc372a2.js"
+    "static/css/main.2631d32b.css",
+    "static/js/main.b5e782db.js"
   ]
 }
