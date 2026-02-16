@@ -16,7 +16,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false }));
 app.use(bodyParser.json());
-const defaultOrigins = ["http://localhost:3000", "http://localhost:3005"];
+const defaultOrigins = ["http://localhost:3000", "http://localhost:3005", "https://www.ninohub.com"];
 const envOrigins = (process.env.CLIENT_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
