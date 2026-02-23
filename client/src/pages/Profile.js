@@ -3,6 +3,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { Link, useNavigate } from "react-router-dom";
 import { logout, setUser } from "../redux/slices/userSlice";
 import { logoutUser, updateUser } from "../services/auth";
+import { fetchUserOrders } from "../services/orders";
 import { toast } from "sonner";
 import "./Profile.css";
 
@@ -11,42 +12,14 @@ const Profile = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("orders");
+  const [orders, setOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: currentUser?.name || "",
     phone: currentUser?.phone || "+234",
     bio: currentUser?.bio || "",
   });
   const [isSaving, setIsSaving] = useState(false);
-
-  // Mock user orders
-  const mockOrders = [
-    {
-      id: "NNO-123456789",
-      date: "Nov 20, 2025",
-      status: "In Transit",
-      total: 2999.99,
-      items: [
-        {
-          name: "Classic Diamond Ring",
-          quantity: 1,
-          price: 2999.99,
-        },
-      ],
-    },
-    {
-      id: "NNO-987654321",
-      date: "Nov 15, 2025",
-      status: "Delivered",
-      total: 5499.99,
-      items: [
-        {
-          name: "Gold Necklace",
-          quantity: 2,
-          price: 2749.99,
-        },
-      ],
-    },
-  ];
 
   const handleLogout = async () => {
     try {
@@ -69,6 +42,24 @@ const Profile = () => {
         phone: currentUser.phone || "+234",
         bio: currentUser.bio || "",
       });
+    }
+  }, [currentUser]);
+
+  React.useEffect(() => {
+    const loadOrders = async () => {
+      setOrdersLoading(true);
+      try {
+        const response = await fetchUserOrders();
+        setOrders(response || []);
+      } catch (error) {
+        toast.error(error.message || "Failed to load orders");
+      } finally {
+        setOrdersLoading(false);
+      }
+    };
+
+    if (currentUser) {
+      loadOrders();
     }
   }, [currentUser]);
 
@@ -194,14 +185,18 @@ const Profile = () => {
           {activeTab === "orders" && (
             <div className="orders-section">
               <h2>My Orders</h2>
-              {mockOrders.length > 0 ? (
+              {ordersLoading ? (
+                <p>Loading orders...</p>
+              ) : orders.length > 0 ? (
                 <div className="orders-list">
-                  {mockOrders.map((order) => (
-                    <div key={order.id} className="order-card">
+                  {orders.map((order) => (
+                    <div key={order._id} className="order-card">
                       <div className="order-header">
                         <div className="order-info">
-                          <h3>Order #{order.id}</h3>
-                          <p className="order-date">{order.date}</p>
+                          <h3>Order #{order.orderNumber}</h3>
+                          <p className="order-date">
+                            {new Date(order.createdAt).toLocaleDateString()}
+                          </p>
                         </div>
                         <div
                           className={`order-status status-${order.status
@@ -216,7 +211,7 @@ const Profile = () => {
                         {order.items.map((item, index) => (
                           <div key={index} className="order-item">
                             <div className="item-details">
-                              <h4>{item.name}</h4>
+                              <h4>{item.productName || item.name}</h4>
                               <p>Quantity: {item.quantity}</p>
                             </div>
                             <div className="item-price">
@@ -230,11 +225,11 @@ const Profile = () => {
                         <div className="order-total">
                           <span>Total:</span>
                           <span className="total-amount">
-                            ₦{order.total.toLocaleString()}
+                            ₦{order.totalAmount.toLocaleString()}
                           </span>
                         </div>
                         <Link
-                          to={`/track-order?order=${order.id}`}
+                          to={`/track-order?order=${order.orderNumber}`}
                           className="btn-track-order"
                         >
                           Track Order

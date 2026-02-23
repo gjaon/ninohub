@@ -1,14 +1,17 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useSelector, useDispatch } from "react-redux";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { clearCart } from "../redux/slices/cartSlice";
+import { createOrder } from "../services/orders";
 import "./Checkout.css";
 
 const Checkout = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
+  const location = useLocation();
   const { items, totalAmount } = useSelector((state) => state.cart);
+  const { currentUser, isAuthenticated } = useSelector((state) => state.user);
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
     // Shipping Info
@@ -27,6 +30,14 @@ const Checkout = () => {
     expiryDate: "",
     cvv: "",
   });
+
+  // Restore form data from location state if coming back from login
+  useEffect(() => {
+    if (location.state?.formData) {
+      setFormData(location.state.formData);
+      setStep(location.state.step || 1);
+    }
+  }, [location.state]);
 
   const handleInputChange = (e) => {
     setFormData({
@@ -47,15 +58,46 @@ const Checkout = () => {
     }
   };
 
-  const handlePlaceOrder = () => {
-    // Simulate order processing
-    toast.success("Order placed successfully! Thank you for your purchase.", {
-      duration: 5000,
-    });
-    dispatch(clearCart());
-    setTimeout(() => {
-      navigate("/");
-    }, 1000);
+  const handlePlaceOrder = async () => {
+    // Check if user is logged in
+    if (!currentUser || !isAuthenticated) {
+      toast.info("Please log in to place your order");
+      // Save current form data and step to restore after login
+      navigate("/login", {
+        state: {
+          fromCheckout: true,
+          formData: formData,
+          step: step,
+          redirectTo: "/checkout",
+        },
+      });
+      return;
+    }
+
+    try {
+      const shippingAddress = {
+        fullName: `${formData.firstName} ${formData.lastName}`.trim(),
+        email: formData.email,
+        phone: formData.phone,
+        street: formData.address,
+        city: formData.city,
+        state: formData.state,
+        zipCode: formData.zipCode,
+        country: formData.country,
+      };
+
+      await createOrder({ shippingAddress });
+
+      toast.success("Order placed successfully! Thank you for your purchase.", {
+        duration: 5000,
+      });
+      dispatch(clearCart());
+      setTimeout(() => {
+        navigate("/track-order");
+      }, 500);
+    } catch (error) {
+      toast.error(error.message || "Failed to place order");
+    }
   };
 
   const shipping = 15.0;

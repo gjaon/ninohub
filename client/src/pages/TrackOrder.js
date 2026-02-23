@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useSelector } from "react-redux";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
+import { fetchUserOrders, trackOrder } from "../services/orders";
 import "./TrackOrder.css";
 
 const TrackOrder = () => {
@@ -14,129 +15,71 @@ const TrackOrder = () => {
   const [email, setEmail] = useState("");
   const [trackingResult, setTrackingResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [userOrders, setUserOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
   const [viewMode, setViewMode] = useState(
     isAuthenticated ? "my-orders" : "track"
   );
+  const buildTimeline = (order) => {
+    const createdDate = new Date(order.createdAt);
+    const baseDate = createdDate.toLocaleDateString();
+    const baseTime = createdDate.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
-  // Mock user orders
-  const userOrders = isAuthenticated
-    ? [
-        {
-          orderNumber: "NNO-123456789",
-          status: "In Transit",
-          estimatedDelivery: "Nov 25, 2025",
-          timeline: [
-            {
-              status: "Order Placed",
-              date: "Nov 20, 2025",
-              time: "10:30 AM",
-              completed: true,
-            },
-            {
-              status: "Payment Confirmed",
-              date: "Nov 20, 2025",
-              time: "10:35 AM",
-              completed: true,
-            },
-            {
-              status: "Processing",
-              date: "Nov 21, 2025",
-              time: "09:00 AM",
-              completed: true,
-            },
-            {
-              status: "Shipped",
-              date: "Nov 22, 2025",
-              time: "08:00 AM",
-              completed: true,
-            },
-            {
-              status: "In Transit",
-              date: "Nov 22, 2025",
-              time: "02:00 PM",
-              completed: true,
-              current: true,
-            },
-            {
-              status: "Out for Delivery",
-              date: "Nov 25, 2025",
-              time: "08:00 AM",
-              completed: false,
-            },
-            {
-              status: "Delivered",
-              date: "Nov 25, 2025",
-              time: "TBD",
-              completed: false,
-            },
-          ],
-          items: [
-            {
-              name: "Classic Diamond Ring",
-              quantity: 1,
-              price: 2999.99,
-            },
-          ],
-        },
-        {
-          orderNumber: "NNO-987654321",
-          status: "Delivered",
-          estimatedDelivery: "Nov 18, 2025",
-          timeline: [
-            {
-              status: "Order Placed",
-              date: "Nov 15, 2025",
-              time: "03:20 PM",
-              completed: true,
-            },
-            {
-              status: "Payment Confirmed",
-              date: "Nov 15, 2025",
-              time: "03:25 PM",
-              completed: true,
-            },
-            {
-              status: "Processing",
-              date: "Nov 16, 2025",
-              time: "10:00 AM",
-              completed: true,
-            },
-            {
-              status: "Shipped",
-              date: "Nov 17, 2025",
-              time: "09:00 AM",
-              completed: true,
-            },
-            {
-              status: "In Transit",
-              date: "Nov 17, 2025",
-              time: "01:00 PM",
-              completed: true,
-            },
-            {
-              status: "Out for Delivery",
-              date: "Nov 18, 2025",
-              time: "08:00 AM",
-              completed: true,
-            },
-            {
-              status: "Delivered",
-              date: "Nov 18, 2025",
-              time: "11:30 AM",
-              completed: true,
-              current: true,
-            },
-          ],
-          items: [
-            {
-              name: "Gold Necklace",
-              quantity: 2,
-              price: 2749.99,
-            },
-          ],
-        },
-      ]
-    : [];
+    const steps = [
+      "pending",
+      "paid",
+      "processing",
+      "shipped",
+      "delivered",
+    ];
+    const statusIndex = steps.indexOf(order.status);
+    const timeline = steps.map((status, index) => ({
+      status:
+        status === "paid"
+          ? "Payment Confirmed"
+          : status.charAt(0).toUpperCase() + status.slice(1),
+      date: baseDate,
+      time: baseTime,
+      completed: index <= statusIndex && statusIndex !== -1,
+      current: index === statusIndex,
+    }));
+
+    return timeline;
+  };
+
+  const enrichOrder = (order) => {
+    const estimatedDelivery = new Date(
+      new Date(order.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000
+    ).toLocaleDateString();
+
+    return {
+      ...order,
+      estimatedDelivery,
+      timeline: buildTimeline(order),
+    };
+  };
+
+  React.useEffect(() => {
+    const loadOrders = async () => {
+      setOrdersLoading(true);
+      try {
+        const response = await fetchUserOrders();
+        const enriched = (response || []).map(enrichOrder);
+        setUserOrders(enriched);
+      } catch (error) {
+        toast.error(error.message || "Failed to load orders");
+      } finally {
+        setOrdersLoading(false);
+      }
+    };
+
+    if (isAuthenticated) {
+      loadOrders();
+    }
+  }, [isAuthenticated]);
 
   React.useEffect(() => {
     if (orderFromUrl && isAuthenticated) {
@@ -146,9 +89,9 @@ const TrackOrder = () => {
         setViewMode("track");
       }
     }
-  }, [orderFromUrl, isAuthenticated]);
+  }, [orderFromUrl, isAuthenticated, userOrders]);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!orderNumber || (!isAuthenticated && !email)) {
@@ -158,82 +101,15 @@ const TrackOrder = () => {
 
     setLoading(true);
 
-    // Simulate API call
-    setTimeout(() => {
-      // For authenticated users, check their orders first
-      if (isAuthenticated) {
-        const userOrder = userOrders.find((o) => o.orderNumber === orderNumber);
-        if (userOrder) {
-          setTrackingResult(userOrder);
-          setLoading(false);
-          toast.success("Order found!");
-          return;
-        }
-      }
-
-      // Mock tracking data for non-authenticated or external orders
-      const mockData = {
-        orderNumber: orderNumber,
-        status: "In Transit",
-        estimatedDelivery: "Nov 25, 2025",
-        timeline: [
-          {
-            status: "Order Placed",
-            date: "Nov 20, 2025",
-            time: "10:30 AM",
-            completed: true,
-          },
-          {
-            status: "Payment Confirmed",
-            date: "Nov 20, 2025",
-            time: "10:35 AM",
-            completed: true,
-          },
-          {
-            status: "Processing",
-            date: "Nov 21, 2025",
-            time: "09:00 AM",
-            completed: true,
-          },
-          {
-            status: "Shipped",
-            date: "Nov 22, 2025",
-            time: "08:00 AM",
-            completed: true,
-          },
-          {
-            status: "In Transit",
-            date: "Nov 22, 2025",
-            time: "02:00 PM",
-            completed: true,
-            current: true,
-          },
-          {
-            status: "Out for Delivery",
-            date: "Nov 25, 2025",
-            time: "08:00 AM",
-            completed: false,
-          },
-          {
-            status: "Delivered",
-            date: "Nov 25, 2025",
-            time: "TBD",
-            completed: false,
-          },
-        ],
-        items: [
-          {
-            name: "Classic Diamond Ring",
-            quantity: 1,
-            price: 2999.99,
-          },
-        ],
-      };
-
-      setTrackingResult(mockData);
-      setLoading(false);
+    try {
+      const response = await trackOrder(orderNumber, email);
+      setTrackingResult(enrichOrder(response));
       toast.success("Order found!");
-    }, 1500);
+    } catch (error) {
+      toast.error(error.message || "Order not found");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleReset = () => {
@@ -300,7 +176,9 @@ const TrackOrder = () => {
         {isAuthenticated && viewMode === "my-orders" && !trackingResult ? (
           <div className="user-orders-list">
             <h2>Your Orders</h2>
-            {userOrders.length > 0 ? (
+            {ordersLoading ? (
+              <p>Loading orders...</p>
+            ) : userOrders.length > 0 ? (
               <div className="orders-grid">
                 {userOrders.map((order, index) => (
                   <div key={index} className="order-summary-card">
@@ -317,7 +195,7 @@ const TrackOrder = () => {
                     <div className="order-summary-items">
                       {order.items.map((item, idx) => (
                         <div key={idx} className="summary-item">
-                          <span>{item.name}</span>
+                          <span>{item.productName || item.name}</span>
                           <span>₦{item.price.toLocaleString()}</span>
                         </div>
                       ))}
@@ -373,7 +251,7 @@ const TrackOrder = () => {
                 name="orderNumber"
                 value={orderNumber}
                 onChange={(e) => setOrderNumber(e.target.value)}
-                placeholder="e.g. NNO-123456789"
+                placeholder="e.g. ORD123456789XYZ"
                 required
               />
             </div>
@@ -407,7 +285,11 @@ const TrackOrder = () => {
             <div className="results-header">
               <div className="order-info">
                 <h2>Order #{trackingResult.orderNumber}</h2>
-                <div className="status-badge status-in-transit">
+                <div
+                  className={`status-badge status-${trackingResult.status
+                    .toLowerCase()
+                    .replace(" ", "-")}`}
+                >
                   {trackingResult.status}
                 </div>
               </div>
@@ -483,7 +365,7 @@ const TrackOrder = () => {
               {trackingResult.items.map((item, index) => (
                 <div key={index} className="order-item">
                   <div className="item-details">
-                    <h4>{item.name}</h4>
+                    <h4>{item.productName || item.name}</h4>
                     <p>Quantity: {item.quantity}</p>
                   </div>
                   <div className="item-price">

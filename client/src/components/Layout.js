@@ -20,6 +20,7 @@ const Layout = ({ children }) => {
       {showMainContent && (
         <main className="layout-main-content">{children}</main>
       )}
+      {/* <main className="layout-main-content">{children}</main> */}
       <Footer />
     </div>
   );

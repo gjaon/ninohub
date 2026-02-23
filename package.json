@@ -29,6 +29,9 @@
     "express-async-handler": "^1.2.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.20.0",
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.1.10",
+    "paystack": "^2.0.1",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0"
   }
 }

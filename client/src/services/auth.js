@@ -2,12 +2,16 @@ import api from "./api";
 
 // Register user
 export const registerUser = async (userData) => {
-  return api.post("/api/users/register", userData);
+  // Include sessionId for cart migration
+  const sessionId = localStorage.getItem("sessionId");
+  return api.post("/api/users/register", { ...userData, sessionId });
 };
 
 // Login user
 export const loginUser = async (credentials) => {
-  return api.post("/api/users/login", credentials);
+  // Include sessionId for cart migration
+  const sessionId = localStorage.getItem("sessionId");
+  return api.post("/api/users/login", { ...credentials, sessionId });
 };
 
 // Logout user

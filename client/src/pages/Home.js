@@ -1,14 +1,15 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { getProductImageUrl } from "../utils/image";
 import "./Home.css";
 
 const Home = () => {
   // Category images - random selections from each category
   const categoryImages = {
-    Rings: require("../assets/product-images/rings-15.jpg"),
-    Necklaces: require("../assets/product-images/necklaces-20.jpg"),
-    Bracelets: require("../assets/product-images/bracelets-10.jpg"),
-    Earrings: require("../assets/product-images/earrings-02.jpg"),
+    Rings: getProductImageUrl("rings-15.jpg"),
+    Necklaces: getProductImageUrl("necklaces-20.jpg"),
+    Bracelets: getProductImageUrl("bracelets-10.jpg"),
+    Earrings: getProductImageUrl("earrings-02.jpg"),
   };
 
   return (
@@ -24,9 +25,9 @@ const Home = () => {
             <Link to="/products" className="btn btn-primary">
               Shop Now
             </Link>
-            <Link to="/customization" className="btn btn-secondary">
+            {/* <Link to="/customization" className="btn btn-secondary">
               Customize Jewelry
-            </Link>
+            </Link> */}
           </div>
         </div>
       </section>

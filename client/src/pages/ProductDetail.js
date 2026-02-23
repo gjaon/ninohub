@@ -2,9 +2,10 @@ import React, { useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useSelector, useDispatch } from "react-redux";
 import { toast } from "sonner";
-import { addToCart } from "../redux/slices/cartSlice";
 import { startCustomization } from "../redux/slices/customizationSlice";
 import { calculatePrice, getDiscountInfo } from "../utils/pricing";
+import useCartSocket from "../hooks/useCartSocket";
+import { getProductImageUrl } from "../utils/image";
 import ImageZoom from "../components/ImageZoom";
 import "./ProductDetail.css";
 
@@ -12,9 +13,12 @@ const ProductDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const dispatch = useDispatch();
-  const products = useSelector((state) => state.products.items);
+  const { items: products, loading: productsLoading } = useSelector(
+    (state) => state.products
+  );
   const product = products.find((p) => p.id === parseInt(id));
   const [quantity, setQuantity] = useState(1);
+  const { addToCartSocket } = useCartSocket();
 
   // Calculate pricing based on quantity
   const pricing = useMemo(() => {
@@ -26,6 +30,14 @@ const ProductDetail = () => {
     return getDiscountInfo(quantity);
   }, [quantity]);
 
+  if (!product && productsLoading) {
+    return (
+      <div className="product-detail">
+        <h2>Loading product...</h2>
+      </div>
+    );
+  }
+
   if (!product) {
     return (
       <div className="product-detail">
@@ -36,7 +48,8 @@ const ProductDetail = () => {
   }
 
   const handleAddToCart = () => {
-    dispatch(addToCart({ ...product, quantity }));
+    // Only emit to socket - let socket response update Redux
+    addToCartSocket(product, quantity);
     toast.success(
       `${quantity} ${quantity > 1 ? "items" : "item"} added to cart!`
     );
@@ -61,7 +74,7 @@ const ProductDetail = () => {
         <div className="product-image-section">
           {product.image ? (
             <ImageZoom
-              src={require(`../assets/product-images/${product.image}`)}
+              src={getProductImageUrl(product.image)}
               alt={product.name}
               zoomLevel={3.5}
             />

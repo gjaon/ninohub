@@ -2,6 +2,7 @@ const asyncHandler = require("express-async-handler");
 const User = require("../models/userModel");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const { migrateSessionCart } = require("./cartController");
 
 const generateAccessToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
@@ -35,7 +36,7 @@ const setAuthCookies = (res, accessToken, refreshToken) => {
 
 // Register User
 const registerUser = asyncHandler(async (req, res) => {
-  const { name, email, password } = req.body;
+  const { name, email, password, sessionId } = req.body;
 
   // Validation
   if (!name || !email || !password) {
@@ -68,6 +69,11 @@ const registerUser = asyncHandler(async (req, res) => {
   await user.save();
   setAuthCookies(res, accessToken, refreshToken);
 
+  // Migrate session cart to user cart if sessionId is provided
+  if (sessionId) {
+    await migrateSessionCart(user._id, sessionId);
+  }
+
   if (user) {
     const { _id, name, email, photo, phone, bio } = user;
     res.status(201).json({
@@ -86,7 +92,7 @@ const registerUser = asyncHandler(async (req, res) => {
 
 // Login User
 const loginUser = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, sessionId } = req.body;
 
   // Validate Request
   if (!email || !password) {
@@ -111,6 +117,12 @@ const loginUser = asyncHandler(async (req, res) => {
     user.refreshToken = refreshToken;
     await user.save();
     setAuthCookies(res, accessToken, refreshToken);
+    
+    // Migrate session cart to user cart if sessionId is provided
+    if (sessionId) {
+      await migrateSessionCart(user._id, sessionId);
+    }
+    
     const { _id, name, email, photo, phone, bio } = user;
     res.status(200).json({
       _id,

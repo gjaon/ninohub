@@ -1,17 +1,18 @@
 import React from "react";
-import { useDispatch } from "react-redux";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { addToCart } from "../redux/slices/cartSlice";
+import useCartSocket from "../hooks/useCartSocket";
+import { getProductImageUrl } from "../utils/image";
 import "./ProductCard.css";
 
 const ProductCard = ({ product }) => {
-  const dispatch = useDispatch();
   const navigate = useNavigate();
+  const { addToCartSocket } = useCartSocket();
 
   const handleAddToCart = (e) => {
     e.stopPropagation();
-    dispatch(addToCart({ ...product, quantity: 1 }));
+    // Only emit to socket - let socket response update Redux
+    addToCartSocket(product, 1);
     toast.success("Product added to cart!");
   };
 
@@ -23,10 +24,7 @@ const ProductCard = ({ product }) => {
     <div className="product-card" onClick={handleCardClick}>
       <div className="product-card-image">
         {product.image ? (
-          <img
-            src={require(`../assets/product-images/${product.image}`)}
-            alt={product.name}
-          />
+          <img src={getProductImageUrl(product.image)} alt={product.name} />
         ) : (
           <span>{product.category}</span>
         )}

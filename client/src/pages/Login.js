@@ -19,7 +19,13 @@ const Login = () => {
     confirmPassword: "",
   });
 
-  const from = location.state?.from?.pathname || "/";
+  const from = location.state?.from?.pathname || location.state?.redirectTo || "/";
+  const checkoutState = location.state?.fromCheckout
+    ? {
+        formData: location.state.formData,
+        step: location.state.step,
+      }
+    : null;
 
   const handleChange = (e) => {
     setFormData({
@@ -66,7 +72,12 @@ const Login = () => {
         toast.success(
           `Welcome, ${response.name}! Account created successfully.`
         );
-        navigate(from, { replace: true });
+        // Navigate with checkout state if coming from checkout
+        if (checkoutState) {
+          navigate(from, { replace: true, state: checkoutState });
+        } else {
+          navigate(from, { replace: true });
+        }
       } catch (error) {
         const message = error.message || "Signup failed. Please try again.";
         dispatch(setError(message));
@@ -89,7 +100,12 @@ const Login = () => {
         });
         dispatch(setUser(response));
         toast.success("Logged in successfully!");
-        navigate(from, { replace: true });
+        // Navigate with checkout state if coming from checkout
+        if (checkoutState) {
+          navigate(from, { replace: true, state: checkoutState });
+        } else {
+          navigate(from, { replace: true });
+        }
       } catch (error) {
         const message = error.message || "Login failed. Please try again.";
         dispatch(setError(message));

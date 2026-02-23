@@ -23,6 +23,9 @@ const productsSlice = createSlice({
     setProducts: (state, action) => {
       state.items = action.payload;
       state.filteredItems = action.payload;
+      state.categories = Array.from(
+        new Set(action.payload.map((item) => item.category).filter(Boolean))
+      ).sort();
     },
     filterByCategory: (state, action) => {
       state.selectedCategory = action.payload;
