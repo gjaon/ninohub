@@ -30,6 +30,12 @@
   line-height: 1.6;
 }
 
+.waitlist-total-text {
+  margin-top: 14px !important;
+  color: #6A4F0A !important;
+  font-weight: 700;
+}
+
 .waitlist-form-wrapper {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -1,11 +1,15 @@
 import React, { useState, useEffect } from "react";
 import { useLocation } from "react-router-dom";
 import { useLaunch } from "../context/LaunchContext";
+import useWaitlistCount from "../hooks/useWaitlistCount";
 import "./LaunchCountdown.css";
 
 const LaunchCountdown = () => {
   const { pathname } = useLocation();
   const { isPreLaunch, launchDate } = useLaunch();
+  const shouldTrackWaitlistCount = pathname !== "/waitlist";
+  const { count: waitlistCount, isLoading: isWaitlistCountLoading } =
+    useWaitlistCount(shouldTrackWaitlistCount);
 
   const [timeLeft, setTimeLeft] = useState({
     days: 0,
@@ -177,6 +181,12 @@ const LaunchCountdown = () => {
             <p className="launch-subtext">
               Join our waitlist to be notified about the launch and get
               exclusive early-bird discounts!
+            </p>
+
+            <p className="waitlist-count-text">
+              {isWaitlistCountLoading
+                ? "Loading waitlist..."
+                : `${waitlistCount.toLocaleString()} people already joined the waitlist`}
             </p>
 
             <a href="/waitlist" className="btn-join-waitlist">

@@ -9,6 +9,11 @@ export const joinWaitlist = async (waitlistData) => {
   });
 };
 
+// Get waitlist total count
+export const getWaitlistCount = async () => {
+  return api.get("/api/waitlist/count");
+};
+
 // Get all waitlist entries (admin only)
 export const getWaitlistEntries = async () => {
   return api.get("/api/waitlist");

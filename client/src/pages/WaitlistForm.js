@@ -1,9 +1,11 @@
 import React, { useState } from "react";
 import { joinWaitlist } from "../services/waitlist";
 import { GiftIcon, ClockIcon, StarIcon, BellIcon, RocketIcon, DiamondIcon } from "../components/icons/SvgIcons";
+import useWaitlistCount from "../hooks/useWaitlistCount";
 import "./WaitlistForm.css";
 
 const WaitlistForm = () => {
+  const { count: waitlistCount, isLoading: isWaitlistCountLoading } = useWaitlistCount();
   const [formData, setFormData] = useState({
     name: "",
     phone: "",
@@ -66,6 +68,11 @@ const WaitlistForm = () => {
           <p>
             Be among the first to experience our exclusive jewelry collection
             with massive discounts!
+          </p>
+          <p className="waitlist-total-text">
+            {isWaitlistCountLoading
+              ? "Loading total waitlist members..."
+              : `${waitlistCount.toLocaleString()} people have joined the waitlist`}
           </p>
         </div>
 

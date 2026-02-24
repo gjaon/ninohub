@@ -1,5 +1,6 @@
 const asyncHandler = require("express-async-handler");
 const Waitlist = require("../models/waitlistModel");
+const { emitWaitlistCount } = require("../utils/waitlistRealtime");
 
 // Add to waitlist
 const joinWaitlist = asyncHandler(async (req, res) => {
@@ -25,10 +26,22 @@ const joinWaitlist = asyncHandler(async (req, res) => {
     email: email || null,
   });
 
+  await emitWaitlistCount(req.app.locals.io);
+
   res.status(201).json({
     success: true,
     message: "Successfully joined the waitlist!",
     data: waitlistEntry,
+  });
+});
+
+// Get waitlist total count
+const getWaitlistCount = asyncHandler(async (req, res) => {
+  const count = await Waitlist.countDocuments();
+
+  res.status(200).json({
+    success: true,
+    count,
   });
 });
 
@@ -74,5 +87,6 @@ const updateWaitlistStatus = asyncHandler(async (req, res) => {
 module.exports = {
   joinWaitlist,
   getWaitlist,
+  getWaitlistCount,
   updateWaitlistStatus,
 };

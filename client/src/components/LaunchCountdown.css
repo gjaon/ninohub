@@ -201,6 +201,13 @@
   font-weight: 500;
 }
 
+.waitlist-count-text {
+  font-size: 0.95rem;
+  margin: 0 0 20px;
+  color: rgba(255, 255, 255, 0.96);
+  font-weight: 600;
+}
+
 .btn-join-waitlist {
   display: inline-block;
   background-color: #FCBB18;

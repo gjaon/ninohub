@@ -9,6 +9,10 @@ const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
+const {
+  emitWaitlistCount,
+  startWaitlistChangeStream,
+} = require("./utils/waitlistRealtime");
 
 const userRoute = require("./routes/userRoutes");
 const waitlistRoute = require("./routes/waitlistRoutes");
@@ -112,6 +116,18 @@ io.use((socket, next) => {
 // Socket.io connection handler
 io.on("connection", (socket) => {
   console.log(`Client connected: ${socket.id}, sessionId: ${socket.sessionId}`);
+
+  emitWaitlistCount(io, socket.id).catch((error) => {
+    console.error("waitlist:count initial emit error:", error.message);
+  });
+
+  socket.on("waitlist:count:request", async () => {
+    try {
+      await emitWaitlistCount(io, socket.id);
+    } catch (error) {
+      console.error("waitlist:count:request error:", error.message);
+    }
+  });
 
   // Cart events
   socket.on("cart:add", async (data) => {
@@ -345,6 +361,9 @@ const PORT = process.env.PORT || 5000;
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
+    const waitlistChangeStream = startWaitlistChangeStream(io);
+    app.locals.waitlistChangeStream = waitlistChangeStream;
+
     httpServer.listen(PORT, () => {
       console.log(`Server Running on port ${PORT}`);
     });
