@@ -29,6 +29,7 @@ const Profile = () => {
       return;
     }
 
+    localStorage.removeItem("accessToken");
     dispatch(logout());
     toast.success("Logged out successfully");
     navigate("/");

@@ -48,6 +48,20 @@ const cartSchema = mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // Cart reservation fields
+    reservationExpiry: {
+      type: Date,
+      default: null,
+    },
+    reservationStatus: {
+      type: String,
+      enum: ["active", "expired", "checkout", "completed"],
+      default: "active",
+    },
+    checkoutStartedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

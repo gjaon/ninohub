@@ -5,8 +5,26 @@ import "./Navbar.css";
 
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const { totalQuantity } = useSelector((state) => state.cart);
+  const {
+    totalQuantity,
+    reservationStatus,
+    remainingTime,
+    reservationExpiry,
+    isExpired,
+  } = useSelector((state) => state.cart);
   const { isAuthenticated, currentUser } = useSelector((state) => state.user);
+  const isCountdownActive =
+    totalQuantity > 0 &&
+    !isExpired &&
+    reservationStatus === "active" &&
+    remainingTime > 0;
+  const totalSeconds = 300;
+  const ringProgress = isCountdownActive
+    ? Math.max(0, Math.min(1, remainingTime / totalSeconds))
+    : 0;
+  const badgeStyle = isCountdownActive
+    ? { "--ring-progress": ringProgress }
+    : undefined;
 
   const toggleMobileMenu = () => {
     setIsMobileMenuOpen(!isMobileMenuOpen);
@@ -87,7 +105,19 @@ const Navbar = () => {
             />
             <span>Cart</span>
             {totalQuantity > 0 && (
-              <span className="cart-badge">{totalQuantity}</span>
+              <span
+                key={reservationExpiry || "badge"}
+                className={`cart-badge${isCountdownActive ? " countdown-active" : ""}`}
+                style={badgeStyle}
+              >
+                {isCountdownActive && (
+                  <svg className="cart-badge-ring" viewBox="0 0 36 36">
+                    <circle className="ring-bg" cx="18" cy="18" r="15.915" />
+                    <circle className="ring-progress" cx="18" cy="18" r="15.915" />
+                  </svg>
+                )}
+                {totalQuantity}
+              </span>
             )}
           </Link>
 

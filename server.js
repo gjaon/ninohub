@@ -29,12 +29,24 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false }));
 app.use(bodyParser.json());
-const defaultOrigins = ["http://localhost:3000", "http://localhost:3005", "https://www.ninohub.com"];
-const envOrigins = (process.env.CLIENT_ORIGIN || "")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const defaultOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3005",
+  "http://localhost:5173",
+  "https://www.ninohub.com",
+];
+const parseOrigins = (origins) =>
+  (origins || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+const envOrigins = [
+  ...parseOrigins(process.env.CLIENT_ORIGIN),
+  ...parseOrigins(process.env.FRONTEND_ORIGIN),
+  ...parseOrigins(process.env.FRONTEND_URL),
+];
 const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
+const allowAllOrigins = allowedOrigins.includes("*");
 const isProduction =
   process.env.NODE_ENV === "production" ||
   process.env.NODE_ENV === "staging";
@@ -42,7 +54,7 @@ const isProduction =
 const corsOptions = isProduction
   ? {
       origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
           return callback(null, true);
         }
         return callback(new Error("Not allowed by CORS"));
@@ -133,6 +145,7 @@ io.on("connection", (socket) => {
   socket.on("cart:add", async (data) => {
     try {
       const Cart = require("./models/cartModel");
+      const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
       const { product, quantity = 1 } = data;
 
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
@@ -151,12 +164,19 @@ io.on("connection", (socket) => {
         cart = await Cart.create(cartData);
       }
 
-      const existingItem = cart.items.find((item) => item.productId === product.id);
+      // Normalize product ID to string for comparison
+      const productId = String(product.id);
+      const existingItem = cart.items.find((item) => String(item.productId) === productId);
+      
       if (existingItem) {
-        existingItem.quantity += quantity;
+        // Update existing item quantity instead of duplicating
+        existingItem.quantity = quantity; // Replace with new quantity
+        existingItem.price = product.price; // Update price in case it changed
+        existingItem.productName = product.name; // Update name
+        existingItem.image = product.image; // Update image
       } else {
         cart.items.push({
-          productId: product.id,
+          productId: productId,
           productName: product.name,
           price: product.price,
           quantity,
@@ -169,8 +189,35 @@ io.on("connection", (socket) => {
 
       await cart.save();
 
-      socket.emit("cart:updated", cart);
-      socket.broadcast.emit("cart:updated", cart);
+      // Reserve items and restart countdown
+      try {
+        await reserveCartItems(cart);
+        const remainingTime = getRemainingTime(cart);
+        
+        socket.emit("cart:updated", { 
+          ...cart.toObject(), 
+          remainingTime,
+          reservationExpiry: cart.reservationExpiry 
+        });
+        socket.broadcast.emit("inventory:updated"); // Notify others about inventory change
+      } catch (reservationError) {
+        // If reservation fails, remove the item and notify user
+        if (!existingItem) {
+          cart.items = cart.items.filter((item) => String(item.productId) !== productId);
+        } else {
+          // Restore previous quantity if update failed
+          existingItem.quantity = existingItem.quantity - quantity;
+          if (existingItem.quantity <= 0) {
+            cart.items = cart.items.filter((item) => String(item.productId) !== productId);
+          }
+        }
+        cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
+        cart.totalPrice = cart.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+        await cart.save();
+        
+        socket.emit("cart:error", { message: reservationError.message });
+        return;
+      }
     } catch (error) {
       console.error("cart:add error:", error);
       socket.emit("cart:error", { message: error.message });
@@ -180,6 +227,7 @@ io.on("connection", (socket) => {
   socket.on("cart:remove", async (data) => {
     try {
       const Cart = require("./models/cartModel");
+      const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
       const { productId } = data;
 
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
@@ -193,8 +241,23 @@ io.on("connection", (socket) => {
 
       await cart.save();
 
-      socket.emit("cart:updated", cart);
-      socket.broadcast.emit("cart:updated", cart);
+      // Update reservations
+      if (cart.items.length > 0) {
+        await reserveCartItems(cart);
+        const remainingTime = getRemainingTime(cart);
+        socket.emit("cart:updated", { 
+          ...cart.toObject(), 
+          remainingTime,
+          reservationExpiry: cart.reservationExpiry 
+        });
+      } else {
+        // Clear all reservations if cart is empty
+        const { releaseCartReservations } = require("./utils/cartReservation");
+        await releaseCartReservations(cart._id);
+        socket.emit("cart:updated", cart);
+      }
+      
+      socket.broadcast.emit("inventory:updated");
     } catch (error) {
       console.error("cart:remove error:", error);
       socket.emit("cart:error", { message: error.message });
@@ -204,6 +267,7 @@ io.on("connection", (socket) => {
   socket.on("cart:updateQuantity", async (data) => {
     try {
       const Cart = require("./models/cartModel");
+      const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
       const { productId, quantity } = data;
 
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
@@ -223,8 +287,22 @@ io.on("connection", (socket) => {
 
       await cart.save();
 
-      socket.emit("cart:updated", cart);
-      socket.broadcast.emit("cart:updated", cart);
+      // Update reservations
+      if (cart.items.length > 0) {
+        await reserveCartItems(cart);
+        const remainingTime = getRemainingTime(cart);
+        socket.emit("cart:updated", { 
+          ...cart.toObject(), 
+          remainingTime,
+          reservationExpiry: cart.reservationExpiry 
+        });
+      } else {
+        const { releaseCartReservations } = require("./utils/cartReservation");
+        await releaseCartReservations(cart._id);
+        socket.emit("cart:updated", cart);
+      }
+      
+      socket.broadcast.emit("inventory:updated");
     } catch (error) {
       console.error("cart:updateQuantity error:", error);
       socket.emit("cart:error", { message: error.message });
@@ -234,6 +312,7 @@ io.on("connection", (socket) => {
   socket.on("cart:sync", async (data) => {
     try {
       const Cart = require("./models/cartModel");
+      const { getRemainingTime } = require("./utils/cartReservation");
       const { sessionId } = data;
 
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
@@ -252,9 +331,96 @@ io.on("connection", (socket) => {
         cart = await Cart.create(cartData);
       }
 
-      socket.emit("cart:synced", cart);
+      const remainingTime = getRemainingTime(cart);
+      socket.emit("cart:synced", { 
+        ...cart.toObject(), 
+        remainingTime,
+        reservationExpiry: cart.reservationExpiry 
+      });
     } catch (error) {
       console.error("cart:sync error:", error);
+      socket.emit("cart:error", { message: error.message });
+    }
+  });
+
+  // Get remaining time for cart reservation
+  socket.on("cart:getRemainingTime", async () => {
+    try {
+      const Cart = require("./models/cartModel");
+      const { getRemainingTime } = require("./utils/cartReservation");
+
+      const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
+      const cart = await Cart.findOne(query);
+
+      if (!cart) {
+        socket.emit("cart:remainingTime", { remainingTime: 0 });
+        return;
+      }
+
+      const remainingTime = getRemainingTime(cart);
+      socket.emit("cart:remainingTime", { 
+        remainingTime, 
+        reservationExpiry: cart.reservationExpiry,
+        reservationStatus: cart.reservationStatus 
+      });
+    } catch (error) {
+      console.error("cart:getRemainingTime error:", error);
+      socket.emit("cart:error", { message: error.message });
+    }
+  });
+
+  // Start checkout (switch to 3-minute timer)
+  socket.on("cart:startCheckout", async () => {
+    try {
+      const Cart = require("./models/cartModel");
+      const { startCheckout, getRemainingTime } = require("./utils/cartReservation");
+
+      const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
+      const cart = await Cart.findOne(query);
+
+      if (!cart) {
+        socket.emit("cart:error", { message: "Cart not found" });
+        return;
+      }
+
+      await startCheckout(cart._id);
+      const updatedCart = await Cart.findById(cart._id);
+      const remainingTime = getRemainingTime(updatedCart);
+
+      socket.emit("cart:checkoutStarted", { 
+        remainingTime,
+        reservationExpiry: updatedCart.reservationExpiry,
+        reservationStatus: updatedCart.reservationStatus 
+      });
+    } catch (error) {
+      console.error("cart:startCheckout error:", error);
+      socket.emit("cart:error", { message: error.message });
+    }
+  });
+
+  // Cancel checkout (back to cart)
+  socket.on("cart:cancelCheckout", async () => {
+    try {
+      const Cart = require("./models/cartModel");
+      const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
+
+      const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
+      const cart = await Cart.findOne(query);
+
+      if (!cart) return;
+
+      // Reset to 5-minute timer
+      await reserveCartItems(cart);
+      const updatedCart = await Cart.findById(cart._id);
+      const remainingTime = getRemainingTime(updatedCart);
+
+      socket.emit("cart:checkoutCancelled", { 
+        remainingTime,
+        reservationExpiry: updatedCart.reservationExpiry,
+        reservationStatus: updatedCart.reservationStatus 
+      });
+    } catch (error) {
+      console.error("cart:cancelCheckout error:", error);
       socket.emit("cart:error", { message: error.message });
     }
   });
@@ -323,6 +489,16 @@ io.on("connection", (socket) => {
 
 // Store io instance globally for access in route handlers
 app.locals.io = io;
+
+// Start cleanup interval for expired cart reservations (every 30 seconds)
+const { cleanupExpiredReservations } = require("./utils/cartReservation");
+setInterval(async () => {
+  try {
+    await cleanupExpiredReservations(io);
+  } catch (error) {
+    console.error("Reservation cleanup error:", error);
+  }
+}, 30000); // Run every 30 seconds
 
 // Routes Middleware
 app.use("/api/users", userRoute);

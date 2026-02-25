@@ -145,7 +145,7 @@ const LaunchCountdown = () => {
             </h2>
             <p className="launch-message">
               Get ready for our awoof sales starting on{" "}
-              <strong>March 6th, 2026 at 8:00 PM</strong>
+              <strong>March 6th, 2026 at 12:00 AM</strong>
             </p>
 
             <div className="countdown-timer">

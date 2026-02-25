@@ -68,6 +68,9 @@ const Login = () => {
           email: formData.email,
           password: formData.password,
         });
+        if (response?.token) {
+          localStorage.setItem("accessToken", response.token);
+        }
         dispatch(setUser(response));
         toast.success(
           `Welcome, ${response.name}! Account created successfully.`
@@ -98,6 +101,9 @@ const Login = () => {
           email: formData.email,
           password: formData.password,
         });
+        if (response?.token) {
+          localStorage.setItem("accessToken", response.token);
+        }
         dispatch(setUser(response));
         toast.success("Logged in successfully!");
         // Navigate with checkout state if coming from checkout

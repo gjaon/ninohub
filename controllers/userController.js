@@ -9,7 +9,8 @@ const generateAccessToken = (id) => {
 };
 
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_REFRESH_SECRET, { expiresIn: "7d" });
+  const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+  return jwt.sign({ id }, refreshSecret, { expiresIn: "7d" });
 };
 
 const setAuthCookies = (res, accessToken, refreshToken) => {
@@ -76,13 +77,18 @@ const registerUser = asyncHandler(async (req, res) => {
 
   if (user) {
     const { _id, name, email, photo, phone, bio } = user;
+    const cleanedName = typeof name === "string" ? name.trim() : "";
+    const displayName = cleanedName && cleanedName !== "User"
+      ? cleanedName
+      : (email ? email.split("@")[0] : "User");
     res.status(201).json({
-      _id,
-      name,
+      _id: _id.toString(),
+      name: displayName,
       email,
-      photo,
-      phone,
-      bio,
+      photo: photo || null,
+      phone: phone || "",
+      bio: bio || "",
+      token: accessToken,
     });
   } else {
     res.status(400);
@@ -124,14 +130,20 @@ const loginUser = asyncHandler(async (req, res) => {
     }
     
     const { _id, name, email, photo, phone, bio } = user;
-    res.status(200).json({
-      _id,
-      name,
+    const cleanedName = typeof name === "string" ? name.trim() : "";
+    const displayName = cleanedName && cleanedName !== "User"
+      ? cleanedName
+      : (email ? email.split("@")[0] : "User");
+    const responseData = {
+      _id: _id.toString(),
+      name: displayName,
       email,
-      photo,
-      phone,
-      bio,
-    });
+      photo: photo || null,
+      phone: phone || "",
+      bio: bio || "",
+      token: accessToken,
+    };
+    res.status(200).json(responseData);
   } else {
     res.status(400);
     throw new Error("Invalid email or password");
@@ -167,17 +179,21 @@ const logout = asyncHandler(async (req, res) => {
 
 // Get User Data
 const getUser = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.user._id).select("-password -refreshToken");
 
   if (user) {
     const { _id, name, email, photo, phone, bio } = user;
+    const cleanedName = typeof name === "string" ? name.trim() : "";
+    const displayName = cleanedName && cleanedName !== "User"
+      ? cleanedName
+      : (email ? email.split("@")[0] : "User");
     res.status(200).json({
-      _id,
-      name,
+      _id: _id.toString(),
+      name: displayName,
       email,
-      photo,
-      phone,
-      bio,
+      photo: photo || null,
+      phone: phone || "",
+      bio: bio || "",
     });
   } else {
     res.status(400);
@@ -210,7 +226,8 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
     throw new Error("Refresh token missing");
   }
 
-  const verified = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+  const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+  const verified = jwt.verify(refreshToken, refreshSecret);
   const user = await User.findById(verified.id);
 
   if (!user || user.refreshToken !== refreshToken) {

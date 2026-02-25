@@ -84,6 +84,10 @@ function App() {
   useEffect(() => {
     const restoreUserSession = async () => {
       try {
+        const token = localStorage.getItem("accessToken");
+        if (!token) {
+          return;
+        }
         const response = await getUser();
         if (response) {
           dispatch(setUser(response));

@@ -4,7 +4,7 @@ const LaunchContext = createContext();
 
 export const LaunchProvider = ({ children }) => {
   // Check if launch date has passed
-  const launchDate = new Date("2026-03-06T20:00:00").getTime();
+  const launchDate = new Date("2026-03-06T00:00:00").getTime();
   const now = new Date().getTime();
   const isPreLaunch = now < launchDate;
 

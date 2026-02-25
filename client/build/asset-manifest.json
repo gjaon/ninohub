@@ -1,7 +1,7 @@
 {
   "files": {
-    "main.css": "/static/css/main.b6da9654.css",
-    "main.js": "/static/js/main.f3d5604e.js",
+    "main.css": "/static/css/main.d5d579ce.css",
+    "main.js": "/static/js/main.1a5be249.js",
     "static/js/453.d456ce70.chunk.js": "/static/js/453.d456ce70.chunk.js",
     "static/media/necklaces-17.jpg": "/static/media/necklaces-17.eba7ce113180f103bcdc.jpg",
     "static/media/other-03.jpg": "/static/media/other-03.e507c5a6c78c51163aab.jpg",
@@ -238,17 +238,17 @@
     "static/media/watches-04.jpg": "/static/media/watches-04.503fed6ab4d9746d33cb.jpg",
     "static/media/necklaces-29.jpg": "/static/media/necklaces-29.68f3e8f42d43173bb5c7.jpg",
     "static/media/custom-03.jpg": "/static/media/custom-03.b1e42376c083fa148dde.jpg",
+    "index.html": "/index.html",
     "static/media/cart-icon.svg": "/static/media/cart-icon.2e71b36b4e50296d98a7a18dbb86ee4a.svg",
     "static/media/instagram-icon.svg": "/static/media/instagram-icon.1a5175d08d43ae2a7483303773c24a91.svg",
     "static/media/tiktok-icon.svg": "/static/media/tiktok-icon.ddfe6c03cfa04a4416c716517123f94e.svg",
     "static/media/facebook-icon.svg": "/static/media/facebook-icon.89fde62f458562dcfdcdae21d1a07c18.svg",
-    "index.html": "/index.html",
-    "main.b6da9654.css.map": "/static/css/main.b6da9654.css.map",
-    "main.f3d5604e.js.map": "/static/js/main.f3d5604e.js.map",
+    "main.d5d579ce.css.map": "/static/css/main.d5d579ce.css.map",
+    "main.1a5be249.js.map": "/static/js/main.1a5be249.js.map",
     "453.d456ce70.chunk.js.map": "/static/js/453.d456ce70.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.b6da9654.css",
-    "static/js/main.f3d5604e.js"
+    "static/css/main.d5d579ce.css",
+    "static/js/main.1a5be249.js"
   ]
 }

@@ -4,13 +4,20 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { clearCart } from "../redux/slices/cartSlice";
 import { createOrder } from "../services/orders";
+import { getSocket } from "../services/socket";
+import CartCountdown from "../components/CartCountdown";
 import "./Checkout.css";
 
 const Checkout = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const location = useLocation();
-  const { items, totalAmount } = useSelector((state) => state.cart);
+  const { 
+    items, 
+    totalAmount, 
+    reservationExpiry, 
+    reservationStatus 
+  } = useSelector((state) => state.cart);
   const { currentUser, isAuthenticated } = useSelector((state) => state.user);
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
@@ -30,6 +37,50 @@ const Checkout = () => {
     expiryDate: "",
     cvv: "",
   });
+
+  // Start checkout timer when component mounts
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    // Notify backend that checkout has started
+    socket.emit("cart:startCheckout");
+
+    // Listen for checkout started confirmation
+    const handleCheckoutStarted = (data) => {
+      console.log("Checkout timer started:", data);
+    };
+
+    // Listen for reservation expiry
+    const handleReservationExpired = () => {
+      toast.error("Your checkout time has expired. Items have been released.", {
+        duration: 5000,
+      });
+      dispatch(clearCart());
+      navigate("/cart");
+    };
+
+    socket.on("cart:checkoutStarted", handleCheckoutStarted);
+    socket.on("cart:reservation:expired", handleReservationExpired);
+
+    return () => {
+      socket.off("cart:checkoutStarted", handleCheckoutStarted);
+      socket.off("cart:reservation:expired", handleReservationExpired);
+      
+      // If leaving checkout without completing, cancel checkout
+      if (reservationStatus === "checkout") {
+        socket.emit("cart:cancelCheckout");
+      }
+    };
+  }, [dispatch, navigate, reservationStatus]);
+
+  const handleReservationExpired = () => {
+    toast.error("Your checkout time has expired. Please try again.", {
+      duration: 5000,
+    });
+    dispatch(clearCart());
+    navigate("/cart");
+  };
 
   // Restore form data from location state if coming back from login
   useEffect(() => {
@@ -112,6 +163,14 @@ const Checkout = () => {
   return (
     <div className="checkout-page">
       <h1>Checkout</h1>
+
+      {/* Checkout Countdown Timer */}
+      <CartCountdown
+        expiryTime={reservationExpiry}
+        status={reservationStatus}
+        onExpired={handleReservationExpired}
+        variant="checkout"
+      />
 
       <div className="checkout-progress">
         <div className={`progress-item ${step >= 1 ? "active" : ""}`}>

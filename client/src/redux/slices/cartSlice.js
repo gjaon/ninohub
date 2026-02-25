@@ -7,6 +7,10 @@ const initialState = {
   totalQuantity: 0,
   totalAmount: 0,
   totalPrice: 0,
+  reservationExpiry: null,
+  reservationStatus: "active",
+  remainingTime: 0,
+  isExpired: false,
 };
 
 const cartSlice = createSlice({
@@ -87,6 +91,15 @@ const cartSlice = createSlice({
       state.totalQuantity = 0;
       state.totalAmount = 0;
       state.totalPrice = 0;
+      state.reservationExpiry = null;
+      state.reservationStatus = "active";
+      state.remainingTime = 0;
+      state.isExpired = false;
+    },
+    markExpired: (state) => {
+      state.isExpired = true;
+      state.reservationStatus = "expired";
+      state.remainingTime = 0;
     },
     // Sync cart from backend
     syncCart: (state, action) => {
@@ -119,6 +132,12 @@ const cartSlice = createSlice({
         (total, item) => total + item.totalPrice,
         0
       );
+      
+      // Update reservation data
+      state.reservationExpiry = backendCart.reservationExpiry || null;
+      state.reservationStatus = backendCart.reservationStatus || "active";
+      state.remainingTime = backendCart.remainingTime || 0;
+      state.isExpired = backendCart.reservationStatus === "expired";
     },
     // Update cart from WebSocket
     updateCartFromSocket: (state, action) => {
@@ -151,6 +170,12 @@ const cartSlice = createSlice({
         (total, item) => total + item.totalPrice,
         0
       );
+      
+      // Update reservation data
+      state.reservationExpiry = backendCart.reservationExpiry || null;
+      state.reservationStatus = backendCart.reservationStatus || "active";
+      state.remainingTime = backendCart.remainingTime || 0;
+      state.isExpired = backendCart.reservationStatus === "expired";
     },
     addCustomization: (state, action) => {
       state.customizations.push(action.payload);
@@ -171,6 +196,6 @@ const cartSlice = createSlice({
   },
 });
 
-export const { addToCart, removeFromCart, updateQuantity, clearCart, syncCart, updateCartFromSocket, addCustomization, removeCustomization } =
+export const { addToCart, removeFromCart, updateQuantity, clearCart, markExpired, syncCart, updateCartFromSocket, addCustomization, removeCustomization } =
   cartSlice.actions;
 export default cartSlice.reducer;

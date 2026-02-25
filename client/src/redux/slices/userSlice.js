@@ -12,8 +12,10 @@ const userSlice = createSlice({
   initialState,
   reducers: {
     setUser: (state, action) => {
+      console.log("REDUX setUser - Received payload:", action.payload);
       state.currentUser = action.payload;
       state.isAuthenticated = true;
+      console.log("REDUX setUser - New state.currentUser:", state.currentUser);
     },
     logout: (state) => {
       state.currentUser = null;

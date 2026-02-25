@@ -53,6 +53,10 @@ const createOrder = asyncHandler(async (req, res) => {
     notes,
   });
 
+  // Complete cart reservation
+  const { completeCart } = require("../utils/cartReservation");
+  await completeCart(cart._id);
+
   cart.items = [];
   cart.customizations = [];
   cart.totalItems = 0;
@@ -166,6 +170,10 @@ const verifyPaymentAndCreateOrder = asyncHandler(async (req, res, io) => {
       paystackReference: paymentData.reference,
       shippingAddress,
     });
+
+    // Complete cart reservation
+    const { completeCart } = require("../utils/cartReservation");
+    await completeCart(cart._id);
 
     // Clear cart
     cart.items = [];

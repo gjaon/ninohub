@@ -1,19 +1,53 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useEffect } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import useCartSocket from "../hooks/useCartSocket";
 import { getDiscountInfo } from "../utils/pricing";
 import { getProductImageUrl } from "../utils/image";
+import { markExpired } from "../redux/slices/cartSlice";
+import CartCountdown from "../components/CartCountdown";
+import { getSocket } from "../services/socket";
 import "./Cart.css";
 
 const Cart = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  const { items, totalQuantity, totalAmount } = useSelector(
-    (state) => state.cart
-  );
-  const { removeFromCartSocket, updateQuantitySocket } = useCartSocket();
+  const { 
+    items, 
+    totalQuantity, 
+    totalAmount, 
+    reservationExpiry, 
+    reservationStatus,
+    isExpired,
+  } = useSelector((state) => state.cart);
+  const { addToCartSocket, removeFromCartSocket, updateQuantitySocket } = useCartSocket();
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    // Listen for reservation expiry
+    const handleReservationExpired = () => {
+      toast.error("Your cart reservation has expired. Items have been released.", {
+        duration: 5000,
+      });
+      dispatch(markExpired());
+    };
+
+    socket.on("cart:reservation:expired", handleReservationExpired);
+
+    return () => {
+      socket.off("cart:reservation:expired", handleReservationExpired);
+    };
+  }, [dispatch]);
+
+  const handleReservationExpired = () => {
+    toast.error("Your reservation has expired. Please add items again.", {
+      duration: 5000,
+    });
+    dispatch(markExpired());
+  };
 
   const handleRemove = (id) => {
     toast.warning("Remove this item from cart?", {
@@ -33,6 +67,10 @@ const Cart = () => {
   };
 
   const handleQuantityChange = (id, newQuantity) => {
+    if (isExpired) {
+      toast.error("Your reservation expired. Re-add items to continue.");
+      return;
+    }
     if (newQuantity > 0) {
       // Only emit WebSocket event - let socket response update Redux
       updateQuantitySocket(id, newQuantity);
@@ -40,7 +78,26 @@ const Cart = () => {
   };
 
   const handleCheckout = () => {
+    if (isExpired) {
+      toast.error("Your reservation expired. Re-add items to checkout.");
+      return;
+    }
     navigate("/checkout");
+  };
+
+  const handleReAddAll = () => {
+    items.forEach((item) => {
+      addToCartSocket(
+        {
+          id: item.id,
+          name: item.name,
+          price: item.price,
+          image: item.image,
+        },
+        item.quantity
+      );
+    });
+    toast.success("Re-reserving your items...");
   };
 
   if (items.length === 0) {
@@ -59,10 +116,24 @@ const Cart = () => {
     <div className="cart-page">
       <h1>Shopping Cart</h1>
 
+      {/* Cart Countdown Timer */}
+      {items.length > 0 && (
+        <CartCountdown
+          expiryTime={reservationExpiry}
+          status={reservationStatus}
+          onExpired={handleReservationExpired}
+          variant="cart"
+        />
+      )}
+
       <div className="cart-content">
         <div className="cart-items">
           {items.map((item) => (
-            <div key={item.id} className="cart-item">
+            <div
+              key={item.id}
+              className={`cart-item${isExpired ? " is-expired" : ""}`}
+              aria-disabled={isExpired}
+            >
               <div className="item-image">
                 {item.image ? (
                   <img
@@ -84,6 +155,7 @@ const Cart = () => {
 
               <div className="item-quantity">
                 <button
+                  disabled={isExpired}
                   onClick={() =>
                     handleQuantityChange(item.id, item.quantity - 1)
                   }
@@ -92,6 +164,7 @@ const Cart = () => {
                 </button>
                 <span>{item.quantity}</span>
                 <button
+                  disabled={isExpired}
                   onClick={() =>
                     handleQuantityChange(item.id, item.quantity + 1)
                   }
@@ -129,6 +202,7 @@ const Cart = () => {
 
               <button
                 className="remove-btn"
+                disabled={isExpired}
                 onClick={() => handleRemove(item.id)}
               >
                 ×
@@ -139,6 +213,12 @@ const Cart = () => {
 
         <div className="cart-summary">
           <h2>Order Summary</h2>
+
+          {isExpired && (
+            <div className="expired-note">
+              Reservation expired. Re-add items to reserve again.
+            </div>
+          )}
 
           <div className="summary-row">
             <span>Items ({totalQuantity})</span>
@@ -162,7 +242,13 @@ const Cart = () => {
             <span>₦{Math.round(totalAmount).toLocaleString()}</span>
           </div>
 
-          <button className="checkout-btn" onClick={handleCheckout}>
+          {isExpired && (
+            <button className="readd-btn" onClick={handleReAddAll}>
+              Re-add Items
+            </button>
+          )}
+
+          <button className="checkout-btn" onClick={handleCheckout} disabled={isExpired}>
             Proceed to Checkout
           </button>
 
