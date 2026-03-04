@@ -13,23 +13,56 @@ const {
   emitWaitlistCount,
   startWaitlistChangeStream,
 } = require("./utils/waitlistRealtime");
+const {
+  getMarketplaceConfig,
+  shouldUseProviderProducts,
+} = require("./config/marketplaceConfig");
 
 const userRoute = require("./routes/userRoutes");
 const waitlistRoute = require("./routes/waitlistRoutes");
 const cartRoute = require("./routes/cartRoutes");
 const orderRoute = require("./routes/orderRoutes");
 const productRoute = require("./routes/productRoutes");
+const marketplaceRoute = require("./routes/marketplaceRoutes");
+const webhookRoute = require("./routes/webhookRoutes");
 const errorHandler = require("./middleware/errorMiddleware");
+const { subscribe } = require("./services/marketplace/businessEventBus");
+const { syncInventoryProjection } = require("./services/marketplace/inventoryProjectionService");
+const MarketplaceWebhookDelivery = require("./models/marketplaceWebhookDeliveryModel");
+const {
+  markProcessing,
+  markProcessed,
+  markRetryOrExhausted,
+} = require("./services/marketplace/webhookDeliveryService");
+const { reconcileMarketplaceOrders } = require("./services/marketplace/reconciliationService");
 
+const {
+  toMonetaryNumber,
+  buildLineKey,
+  hasRequiredVariantSelection,
+  getLineIdentityFromPayload,
+  findCartItemIndex,
+  recalculateCartTotals,
+  applyVariantSwitch,
+} = require("./utils/cartLineUtils");
 const app = express();
 const httpServer = http.createServer(app);
 
+const marketplaceConfig = getMarketplaceConfig();
+
 // Middlewares
-app.use(express.json());
+app.use(
+  express.json({
+    verify: (req, _res, buffer) => {
+      req.rawBody = buffer;
+    },
+  })
+);
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 const defaultOrigins = [
+  "http://localhost:3001",
   "http://localhost:3000",
   "http://localhost:3005",
   "http://localhost:5173",
@@ -45,26 +78,23 @@ const envOrigins = [
   ...parseOrigins(process.env.FRONTEND_ORIGIN),
   ...parseOrigins(process.env.FRONTEND_URL),
 ];
-const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
+const allowedOrigins = [
+  ...new Set([...defaultOrigins, ...envOrigins, ...marketplaceConfig.originAllowlist]),
+];
 const allowAllOrigins = allowedOrigins.includes("*");
 const isProduction =
   process.env.NODE_ENV === "production" ||
   process.env.NODE_ENV === "staging";
 
-const corsOptions = isProduction
-  ? {
-      origin: (origin, callback) => {
-        if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
-          return callback(null, true);
-        }
-        return callback(new Error("Not allowed by CORS"));
-      },
-      credentials: true,
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
+      return callback(null, true);
     }
-  : {
-      origin: true,
-      credentials: true,
-    };
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+};
 
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
@@ -129,6 +159,11 @@ io.use((socket, next) => {
 io.on("connection", (socket) => {
   console.log(`Client connected: ${socket.id}, sessionId: ${socket.sessionId}`);
 
+  if (socket.userId) {
+    socket.join(`buyer:${socket.userId}`);
+  }
+  socket.join(`session:${socket.sessionId}`);
+
   emitWaitlistCount(io, socket.id).catch((error) => {
     console.error("waitlist:count initial emit error:", error.message);
   });
@@ -142,7 +177,7 @@ io.on("connection", (socket) => {
   });
 
   // Cart events
-  socket.on("cart:add", async (data) => {
+  socket.on("cart:add", async (data, ack) => {
     try {
       const Cart = require("./models/cartModel");
       const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
@@ -164,28 +199,64 @@ io.on("connection", (socket) => {
         cart = await Cart.create(cartData);
       }
 
-      // Normalize product ID to string for comparison
       const productId = String(product.id);
-      const existingItem = cart.items.find((item) => String(item.productId) === productId);
+      const variantId = String(product.variantId || "").trim();
+      if (!hasRequiredVariantSelection(product)) {
+        socket.emit("cart:error", { message: "Variant selection is required for grouped products" });
+        if (typeof ack === "function") {
+          ack({ ok: false, message: "Variant selection is required for grouped products" });
+        }
+        return;
+      }
+      const lineKey = buildLineKey(productId, variantId);
+      const productPrice = toMonetaryNumber(product.price, 0);
+      const originalPrice = toMonetaryNumber(product.originalPrice, productPrice);
+      const intrinsicDiscountPercent = Number(product.discountPercent || 0);
+      const existingItemIndex = findCartItemIndex(cart.items, {
+        lineKey,
+        productId,
+        variantId,
+      });
+      const existingItem = existingItemIndex >= 0 ? cart.items[existingItemIndex] : null;
       
       if (existingItem) {
-        // Update existing item quantity instead of duplicating
-        existingItem.quantity = quantity; // Replace with new quantity
-        existingItem.price = product.price; // Update price in case it changed
+        existingItem.quantity = Number(existingItem.quantity || 0) + Number(quantity || 0);
+        existingItem.price = productPrice; // Update price in case it changed
         existingItem.productName = product.name; // Update name
         existingItem.image = product.image; // Update image
+        existingItem.selectedImage = product.selectedImage || product.image;
+        existingItem.lineKey = lineKey;
+        existingItem.listingId = product.listingId || product.parentGroupId || product.id || null;
+        existingItem.variantId = variantId || null;
+        existingItem.variantName = product.variantName || null;
+        existingItem.parentGroupId = product.parentGroupId || null;
+        existingItem.groupName = product.groupName || null;
+        existingItem.originalPrice = originalPrice;
+        existingItem.intrinsicDiscountPercent = Number.isFinite(intrinsicDiscountPercent)
+          ? intrinsicDiscountPercent
+          : 0;
       } else {
         cart.items.push({
           productId: productId,
+          lineKey,
+          listingId: product.listingId || product.parentGroupId || product.id || null,
           productName: product.name,
-          price: product.price,
+          price: productPrice,
           quantity,
           image: product.image,
+          selectedImage: product.selectedImage || product.image,
+          variantId: variantId || null,
+          variantName: product.variantName || null,
+          parentGroupId: product.parentGroupId || null,
+          groupName: product.groupName || null,
+          originalPrice,
+          intrinsicDiscountPercent: Number.isFinite(intrinsicDiscountPercent)
+            ? intrinsicDiscountPercent
+            : 0,
         });
       }
 
-      cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-      cart.totalPrice = cart.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      recalculateCartTotals(cart);
 
       await cart.save();
 
@@ -199,28 +270,35 @@ io.on("connection", (socket) => {
           remainingTime,
           reservationExpiry: cart.reservationExpiry 
         });
+        if (typeof ack === "function") {
+          ack({ ok: true });
+        }
         socket.broadcast.emit("inventory:updated"); // Notify others about inventory change
       } catch (reservationError) {
         // If reservation fails, remove the item and notify user
         if (!existingItem) {
-          cart.items = cart.items.filter((item) => String(item.productId) !== productId);
+          cart.items = cart.items.filter((item) => String(item.lineKey || "") !== lineKey);
         } else {
-          // Restore previous quantity if update failed
-          existingItem.quantity = existingItem.quantity - quantity;
+          existingItem.quantity = Number(existingItem.quantity || 0) - Number(quantity || 0);
           if (existingItem.quantity <= 0) {
-            cart.items = cart.items.filter((item) => String(item.productId) !== productId);
+            cart.items = cart.items.filter((item) => String(item.lineKey || "") !== lineKey);
           }
         }
-        cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-        cart.totalPrice = cart.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+        recalculateCartTotals(cart);
         await cart.save();
         
         socket.emit("cart:error", { message: reservationError.message });
+        if (typeof ack === "function") {
+          ack({ ok: false, message: reservationError.message });
+        }
         return;
       }
     } catch (error) {
       console.error("cart:add error:", error);
       socket.emit("cart:error", { message: error.message });
+      if (typeof ack === "function") {
+        ack({ ok: false, message: error.message });
+      }
     }
   });
 
@@ -228,16 +306,18 @@ io.on("connection", (socket) => {
     try {
       const Cart = require("./models/cartModel");
       const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
-      const { productId } = data;
+      const identity = getLineIdentityFromPayload(data);
 
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
       const cart = await Cart.findOne(query);
 
       if (!cart) return;
 
-      cart.items = cart.items.filter((item) => item.productId !== productId);
-      cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-      cart.totalPrice = cart.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      const existingIndex = findCartItemIndex(cart.items, identity);
+      if (existingIndex >= 0) {
+        cart.items.splice(existingIndex, 1);
+      }
+      recalculateCartTotals(cart);
 
       await cart.save();
 
@@ -268,7 +348,8 @@ io.on("connection", (socket) => {
     try {
       const Cart = require("./models/cartModel");
       const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
-      const { productId, quantity } = data;
+      const identity = getLineIdentityFromPayload(data);
+      const quantity = Number(data?.quantity || 0);
 
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
       const cart = await Cart.findOne(query);
@@ -276,14 +357,17 @@ io.on("connection", (socket) => {
       if (!cart) return;
 
       if (quantity < 1) {
-        cart.items = cart.items.filter((item) => item.productId !== productId);
+        const existingIndex = findCartItemIndex(cart.items, identity);
+        if (existingIndex >= 0) {
+          cart.items.splice(existingIndex, 1);
+        }
       } else {
-        const item = cart.items.find((item) => item.productId === productId);
+        const existingIndex = findCartItemIndex(cart.items, identity);
+        const item = existingIndex >= 0 ? cart.items[existingIndex] : null;
         if (item) item.quantity = quantity;
       }
 
-      cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-      cart.totalPrice = cart.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      recalculateCartTotals(cart);
 
       await cart.save();
 
@@ -305,6 +389,58 @@ io.on("connection", (socket) => {
       socket.broadcast.emit("inventory:updated");
     } catch (error) {
       console.error("cart:updateQuantity error:", error);
+      socket.emit("cart:error", { message: error.message });
+    }
+  });
+
+  socket.on("cart:updateVariant", async (data) => {
+    try {
+      const Cart = require("./models/cartModel");
+      const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
+
+      const currentIdentity = getLineIdentityFromPayload(data?.current || data || {});
+      const nextVariantId = String(data?.nextVariantId || data?.variantId || "").trim();
+      const nextVariantName = String(data?.nextVariantName || "").trim() || null;
+      const nextPrice = toMonetaryNumber(data?.nextPrice, NaN);
+      const nextImage = String(data?.nextImage || "").trim();
+
+      const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
+      const cart = await Cart.findOne(query);
+      if (!cart) return;
+
+      const currentIndex = findCartItemIndex(cart.items, currentIdentity);
+      if (currentIndex < 0) {
+        socket.emit("cart:error", { message: "Cart item not found for variant switch" });
+        return;
+      }
+
+      applyVariantSwitch({
+        items: cart.items,
+        currentIdentity,
+        nextVariantId,
+        nextVariantName,
+        nextPrice,
+        nextImage,
+      });
+
+      recalculateCartTotals(cart);
+      await cart.save();
+
+      if (cart.items.length > 0) {
+        await reserveCartItems(cart);
+        const remainingTime = getRemainingTime(cart);
+        socket.emit("cart:updated", {
+          ...cart.toObject(),
+          remainingTime,
+          reservationExpiry: cart.reservationExpiry,
+        });
+      } else {
+        socket.emit("cart:updated", cart);
+      }
+
+      socket.broadcast.emit("inventory:updated");
+    } catch (error) {
+      console.error("cart:updateVariant error:", error);
       socket.emit("cart:error", { message: error.message });
     }
   });
@@ -427,6 +563,60 @@ io.on("connection", (socket) => {
 
   socket.on("products:sync", async () => {
     try {
+      if (shouldUseProviderProducts()) {
+        const {
+          getProjectedProducts,
+          syncInventoryProjection,
+          syncInventoryProjectionIfStale,
+        } = require("./services/marketplace/inventoryProjectionService");
+        let projected = await getProjectedProducts();
+
+        await syncInventoryProjectionIfStale({
+          trigger: "on-demand-socket-products-stale-refresh",
+          maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
+        }).catch((error) => {
+          console.warn("[socket:products:sync] stale refresh skipped", error.message);
+        });
+        projected = await getProjectedProducts();
+
+        if (!projected.length) {
+          await syncInventoryProjection({ trigger: "on-demand-socket-products-sync" });
+          projected = await getProjectedProducts();
+        }
+
+        if (!projected.length) {
+          socket.emit("products:error", {
+            message: "Provider inventory is unavailable. No projected products found.",
+          });
+          return;
+        }
+
+        const normalized = projected.map((item) => ({
+          id: String(item.providerProductId),
+          name:
+            (item?.metadata?.listingType || "single") === "group"
+              ? (item?.metadata?.groupName || item.name)
+              : item.name,
+          description: item.description || "",
+          category: item.category || "Uncategorized",
+          image: item.image || "",
+          selectedImage: item.image || "",
+          price: Number(item.price || 0),
+          sku: item.sku || null,
+          listingType: item?.metadata?.listingType || "single",
+          listingId: String(item?.metadata?.groupId || item.providerProductId),
+          groupName: item?.metadata?.groupName || null,
+          parentGroupId: item?.metadata?.groupId || null,
+          variantId: item?.metadata?.variantId || null,
+          variantName: item?.metadata?.name || null,
+          variants: Array.isArray(item?.metadata?.variants) ? item.metadata.variants : [],
+          availableQuantity: Number(item.availableQuantity ?? 0),
+          syncedAt: item.providerUpdatedAt || item.updatedAt || null,
+        }));
+        socket.emit("products:synced", normalized);
+        return;
+      }
+
       const products = require("./data/product");
       socket.emit("products:synced", products);
     } catch (error) {
@@ -490,6 +680,13 @@ io.on("connection", (socket) => {
 // Store io instance globally for access in route handlers
 app.locals.io = io;
 
+subscribe((eventEnvelope) => {
+  io.emit("business:event", eventEnvelope);
+  if (eventEnvelope.buyerId) {
+    io.to(`buyer:${eventEnvelope.buyerId}`).emit("business:event", eventEnvelope);
+  }
+});
+
 // Start cleanup interval for expired cart reservations (every 30 seconds)
 const { cleanupExpiredReservations } = require("./utils/cartReservation");
 setInterval(async () => {
@@ -500,12 +697,106 @@ setInterval(async () => {
   }
 }, 30000); // Run every 30 seconds
 
+if (marketplaceConfig.internalUiEnabled) {
+  setInterval(async () => {
+    try {
+      await syncInventoryProjection({ trigger: "scheduled-refresh" });
+    } catch (error) {
+      console.error("Scheduled marketplace sync failed:", error.message);
+    }
+  }, 10 * 60 * 1000);
+
+  setInterval(async () => {
+    try {
+      const { releaseExpiredHolds } = require("./services/marketplace/holdService");
+      await releaseExpiredHolds();
+    } catch (error) {
+      console.error("Hold expiry worker failed:", error.message);
+    }
+  }, 30000);
+}
+
+if (marketplaceConfig.webhooksEnabled) {
+  if (marketplaceConfig.providerWebhookRegistrationEnabled) {
+    setImmediate(async () => {
+      try {
+        const { ensureProviderWebhookEndpointRegistered } = require("./services/marketplace/webhookRegistrationService");
+        await ensureProviderWebhookEndpointRegistered();
+      } catch (error) {
+        console.error("Provider webhook registration failed:", error.message);
+      }
+    });
+
+    setInterval(async () => {
+      try {
+        const { ensureProviderWebhookEndpointRegistered } = require("./services/marketplace/webhookRegistrationService");
+        await ensureProviderWebhookEndpointRegistered();
+      } catch (error) {
+        console.error("Provider webhook registration refresh failed:", error.message);
+      }
+    }, 6 * 60 * 60 * 1000);
+  }
+
+  setInterval(async () => {
+    try {
+      const {
+        processPaystackDelivery,
+        processProviderDelivery,
+      } = require("./controllers/webhookController");
+
+      const now = new Date();
+      const pending = await MarketplaceWebhookDelivery.find({
+        status: "retrying",
+        nextAttemptAt: { $lte: now },
+      })
+        .sort({ nextAttemptAt: 1 })
+        .limit(20);
+
+      for (const delivery of pending) {
+        try {
+          await markProcessing(delivery.deliveryId);
+
+          if (delivery.provider === "paystack") {
+            await processPaystackDelivery(delivery);
+          }
+
+          if (delivery.provider === "provider") {
+            await processProviderDelivery(delivery);
+          }
+
+          await markProcessed(delivery.deliveryId);
+        } catch (error) {
+          await markRetryOrExhausted({
+            deliveryId: delivery.deliveryId,
+            errorMessage: error.message,
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Webhook retry worker failed:", error.message);
+    }
+  }, 15000);
+
+  setInterval(async () => {
+    try {
+      const result = await reconcileMarketplaceOrders({ limit: 50 });
+      if (result.reconciled > 0) {
+        console.info("Marketplace reconciliation corrected orders", result);
+      }
+    } catch (error) {
+      console.error("Marketplace reconciliation worker failed:", error.message);
+    }
+  }, 60000);
+}
+
 // Routes Middleware
 app.use("/api/users", userRoute);
 app.use("/api/waitlist", waitlistRoute);
 app.use("/api/cart", cartRoute);
 app.use("/api/orders", orderRoute);
 app.use("/api/products", productRoute);
+app.use("/api/marketplace", marketplaceRoute);
+app.use("/api/webhooks", webhookRoute);
 
 // Routes
 app.get("/api", (req, res) => {
@@ -545,6 +836,3 @@ mongoose
     });
   })
   .catch((err) => console.log(err));
-
-
-  // I want you to track add the order tracking page as well as the contact us page, please do it for with the brand identity and asthetics ofo the UI of the app, also make it mobile responsive

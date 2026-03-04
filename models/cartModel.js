@@ -17,14 +17,50 @@ const cartSchema = mongoose.Schema(
           type: String,
           required: true,
         },
+        lineKey: {
+          type: String,
+          default: null,
+        },
+        listingId: {
+          type: String,
+          default: null,
+        },
         productName: String,
+        variantId: {
+          type: String,
+          default: null,
+        },
+        variantName: {
+          type: String,
+          default: null,
+        },
+        parentGroupId: {
+          type: String,
+          default: null,
+        },
+        groupName: {
+          type: String,
+          default: null,
+        },
         price: Number,
+        originalPrice: {
+          type: Number,
+          default: null,
+        },
+        intrinsicDiscountPercent: {
+          type: Number,
+          default: 0,
+        },
         quantity: {
           type: Number,
           required: true,
           min: 1,
         },
         image: String,
+        selectedImage: {
+          type: String,
+          default: null,
+        },
       },
     ],
     customizations: [

@@ -19,10 +19,34 @@ const orderSchema = mongoose.Schema(
     items: [
       {
         productId: String,
+        listingId: {
+          type: String,
+          default: null,
+        },
         productName: String,
+        variantId: {
+          type: String,
+          default: null,
+        },
+        variantName: {
+          type: String,
+          default: null,
+        },
+        parentGroupId: {
+          type: String,
+          default: null,
+        },
+        groupName: {
+          type: String,
+          default: null,
+        },
         price: Number,
         quantity: Number,
         image: String,
+        selectedImage: {
+          type: String,
+          default: null,
+        },
       },
     ],
     customizations: [

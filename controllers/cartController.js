@@ -1,6 +1,37 @@
 const Cart = require("../models/cartModel");
 const asyncHandler = require("express-async-handler");
 
+const buildLineKey = (productId, variantId = "") => `${String(productId || "").trim()}::${String(variantId || "").trim()}`;
+
+const findItemIndex = (items = [], { lineKey, productId, variantId }) => {
+  if (lineKey) {
+    const byLineKey = items.findIndex((item) => String(item?.lineKey || "") === String(lineKey));
+    if (byLineKey >= 0) return byLineKey;
+  }
+
+  const normalizedProductId = String(productId || "").trim();
+  const normalizedVariantId = String(variantId || "").trim();
+
+  const exactMatch = items.findIndex(
+    (item) =>
+      String(item?.productId || "") === normalizedProductId
+      && String(item?.variantId || "") === normalizedVariantId
+  );
+
+  if (exactMatch >= 0) return exactMatch;
+
+  if (!normalizedVariantId) {
+    return items.findIndex((item) => String(item?.productId || "") === normalizedProductId);
+  }
+
+  return -1;
+};
+
+const recalcTotals = (cart) => {
+  cart.totalItems = cart.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  cart.totalPrice = cart.items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
+};
+
 // Get cart by userId or sessionId
 const getCart = asyncHandler(async (req, res) => {
   const { sessionId } = req.body;
@@ -52,6 +83,11 @@ const initializeCart = asyncHandler(async (req, res) => {
 // Add item to cart
 const addToCart = asyncHandler(async (req, res, io, socket) => {
   const { product, sessionId, quantity = 1 } = req.body;
+  const productId = String(product?.id || product?.productId || "").trim();
+  const variantId = String(product?.variantId || "").trim();
+  const lineKey = buildLineKey(productId, variantId);
+  const originalPrice = Number(product?.originalPrice || product?.price || 0);
+  const intrinsicDiscountPercent = Number(product?.discountPercent || 0);
 
   let cart;
   const query = socket?.userId ? { userId: socket.userId } : { sessionId };
@@ -76,26 +112,41 @@ const addToCart = asyncHandler(async (req, res, io, socket) => {
   }
 
   // Check if item already exists
-  const existingItem = cart.items.find((item) => item.productId === product.id);
+  const existingItemIndex = findItemIndex(cart.items, {
+    lineKey,
+    productId,
+    variantId,
+  });
+  const existingItem = existingItemIndex >= 0 ? cart.items[existingItemIndex] : null;
 
   if (existingItem) {
     existingItem.quantity += quantity;
+    existingItem.originalPrice = originalPrice;
+    existingItem.intrinsicDiscountPercent = Number.isFinite(intrinsicDiscountPercent)
+      ? intrinsicDiscountPercent
+      : 0;
   } else {
     cart.items.push({
-      productId: product.id,
+      productId,
+      lineKey,
+      listingId: product?.listingId || product?.parentGroupId || productId,
       productName: product.name,
       price: product.price,
       quantity,
       image: product.image,
+      selectedImage: product.selectedImage || product.image,
+      variantId: variantId || null,
+      variantName: product.variantName || null,
+      parentGroupId: product.parentGroupId || null,
+      groupName: product.groupName || null,
+      originalPrice,
+      intrinsicDiscountPercent: Number.isFinite(intrinsicDiscountPercent)
+        ? intrinsicDiscountPercent
+        : 0,
     });
   }
 
-  // Recalculate totals
-  cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-  cart.totalPrice = cart.items.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0
-  );
+  recalcTotals(cart);
 
   await cart.save();
 
@@ -110,7 +161,7 @@ const addToCart = asyncHandler(async (req, res, io, socket) => {
 
 // Remove item from cart
 const removeFromCart = asyncHandler(async (req, res, io, socket) => {
-  const { productId, sessionId } = req.body;
+  const { productId, variantId, lineKey, sessionId } = req.body;
 
   const query = socket?.userId ? { userId: socket.userId } : { sessionId };
   let cart = await Cart.findOne(query);
@@ -119,14 +170,12 @@ const removeFromCart = asyncHandler(async (req, res, io, socket) => {
     return null;
   }
 
-  cart.items = cart.items.filter((item) => item.productId !== productId);
+  const itemIndex = findItemIndex(cart.items, { lineKey, productId, variantId });
+  if (itemIndex >= 0) {
+    cart.items.splice(itemIndex, 1);
+  }
 
-  // Recalculate totals
-  cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-  cart.totalPrice = cart.items.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0
-  );
+  recalcTotals(cart);
 
   await cart.save();
 
@@ -140,10 +189,10 @@ const removeFromCart = asyncHandler(async (req, res, io, socket) => {
 
 // Update item quantity
 const updateQuantity = asyncHandler(async (req, res, io, socket) => {
-  const { productId, quantity, sessionId } = req.body;
+  const { productId, variantId, lineKey, quantity, sessionId } = req.body;
 
   if (quantity < 1) {
-    return removeFromCart({ body: { productId, sessionId } }, res, io, socket);
+    return removeFromCart({ body: { productId, variantId, lineKey, sessionId } }, res, io, socket);
   }
 
   const query = socket?.userId ? { userId: socket.userId } : { sessionId };
@@ -153,17 +202,13 @@ const updateQuantity = asyncHandler(async (req, res, io, socket) => {
     return null;
   }
 
-  const item = cart.items.find((item) => item.productId === productId);
+  const itemIndex = findItemIndex(cart.items, { lineKey, productId, variantId });
+  const item = itemIndex >= 0 ? cart.items[itemIndex] : null;
   if (item) {
     item.quantity = quantity;
   }
 
-  // Recalculate totals
-  cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-  cart.totalPrice = cart.items.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0
-  );
+  recalcTotals(cart);
 
   await cart.save();
 
@@ -272,9 +317,12 @@ const migrateSessionCart = asyncHandler(async (userId, sessionId) => {
   } else {
     // Merge session cart into user cart
     sessionCart.items.forEach((sessionItem) => {
-      const existingItem = userCart.items.find(
-        (item) => item.productId === sessionItem.productId
-      );
+      const existingItemIndex = findItemIndex(userCart.items, {
+        lineKey: sessionItem.lineKey || buildLineKey(sessionItem.productId, sessionItem.variantId),
+        productId: sessionItem.productId,
+        variantId: sessionItem.variantId,
+      });
+      const existingItem = existingItemIndex >= 0 ? userCart.items[existingItemIndex] : null;
       if (existingItem) {
         existingItem.quantity += sessionItem.quantity;
       } else {
@@ -287,15 +335,7 @@ const migrateSessionCart = asyncHandler(async (userId, sessionId) => {
       userCart.customizations.push(customization);
     });
 
-    // Recalculate totals
-    userCart.totalItems = userCart.items.reduce(
-      (sum, item) => sum + item.quantity,
-      0
-    );
-    userCart.totalPrice = userCart.items.reduce(
-      (sum, item) => sum + item.price * item.quantity,
-      0
-    );
+    recalcTotals(userCart);
 
     await userCart.save();
     // Delete the session cart
