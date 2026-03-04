@@ -591,28 +591,10 @@ io.on("connection", (socket) => {
           return;
         }
 
-        const normalized = projected.map((item) => ({
-          id: String(item.providerProductId),
-          name:
-            (item?.metadata?.listingType || "single") === "group"
-              ? (item?.metadata?.groupName || item.name)
-              : item.name,
-          description: item.description || "",
-          category: item.category || "Uncategorized",
-          image: item.image || "",
-          selectedImage: item.image || "",
-          price: Number(item.price || 0),
-          sku: item.sku || null,
-          listingType: item?.metadata?.listingType || "single",
-          listingId: String(item?.metadata?.groupId || item.providerProductId),
-          groupName: item?.metadata?.groupName || null,
-          parentGroupId: item?.metadata?.groupId || null,
-          variantId: item?.metadata?.variantId || null,
-          variantName: item?.metadata?.name || null,
-          variants: Array.isArray(item?.metadata?.variants) ? item.metadata.variants : [],
-          availableQuantity: Number(item.availableQuantity ?? 0),
-          syncedAt: item.providerUpdatedAt || item.updatedAt || null,
-        }));
+        const {
+          __testables: { toFrontendProduct },
+        } = require("./controllers/productController");
+        const normalized = projected.map((item) => toFrontendProduct(item));
         socket.emit("products:synced", normalized);
         return;
       }

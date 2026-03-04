@@ -11,6 +11,9 @@ const {
   __testables: marketplaceControllerTestables,
 } = require("../controllers/marketplaceController");
 const {
+  __testables: productControllerTestables,
+} = require("../controllers/productController");
+const {
   buildLineKey,
   findCartItemIndex,
   applyVariantSwitch,
@@ -59,6 +62,62 @@ test("group listings are not duplicated from legacy group-variant projection row
   assert.equal(consolidated[0].providerProductId, "group-a");
   assert.equal(consolidated[0].metadata.listingType, "group");
   assert.equal(consolidated[0].metadata.variants.length, 2);
+});
+
+test("discount fields are canonicalized for group products and variants", () => {
+  const mappedRows = projectionTestables.mapProviderProducts({
+    listingType: "group",
+    groupId: "group-discount-1",
+    groupName: "Discounted Group",
+    currency: "NGN",
+    variants: [
+      {
+        variantId: "variant-a",
+        name: "Variant A",
+        price: {
+          base: 15000,
+          effective: 12000,
+        },
+        discount: {
+          percent: 20,
+          label: "Promo",
+        },
+        stock: {
+          quantity: 4,
+        },
+      },
+      {
+        variantId: "variant-b",
+        name: "Variant B",
+        price: {
+          base: 10000,
+          effective: 9000,
+        },
+        stock: {
+          quantity: 2,
+        },
+      },
+    ],
+  });
+
+  assert.equal(mappedRows.length, 1);
+  const projected = mappedRows[0];
+  assert.equal(projected.priceEffective, 9000);
+  assert.equal(projected.priceBase, 10000);
+  assert.equal(projected.discountPercent, 10);
+  assert.equal(Array.isArray(projected.variantSnapshots), true);
+  assert.equal(projected.variantSnapshots.length, 2);
+  assert.equal(projected.variantSnapshots[0].priceBase, 15000);
+  assert.equal(projected.variantSnapshots[0].priceEffective, 12000);
+  assert.equal(projected.variantSnapshots[0].discountPercent, 20);
+
+  const frontend = productControllerTestables.toFrontendProduct(projected);
+  assert.equal(frontend.basePrice, 10000);
+  assert.equal(frontend.effectivePrice, 9000);
+  assert.equal(frontend.discountPercent, 10);
+  assert.equal(frontend.variants[0].basePrice, 15000);
+  assert.equal(frontend.variants[0].effectivePrice, 12000);
+  assert.equal(frontend.variants[0].discountPercent, 20);
 });
 
 test("grouped checkout lines include listingId + variantId", () => {

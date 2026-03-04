@@ -19,7 +19,14 @@ const parseNumeric = (value, fallback = 0) => {
 };
 
 export const resolveOriginalPrice = (product = {}) => {
-  const currentPrice = parseNumeric(product?.price, 0);
+  const discountedPrice = parseNumeric(
+    product?.discountPrice
+    ?? product?.salePrice,
+    0
+  );
+  const currentPrice = discountedPrice > 0
+    ? discountedPrice
+    : parseNumeric(product?.price, 0);
   const explicitOriginalPrice = parseNumeric(
     product?.originalPrice
       ?? product?.compareAtPrice
@@ -43,6 +50,22 @@ export const getProductDiscountPercent = (product = {}) => {
   const explicitDiscountPercent = parseNumeric(product?.discountPercent, 0);
   if (Number.isFinite(explicitDiscountPercent) && explicitDiscountPercent > 0) {
     return Math.round(explicitDiscountPercent);
+  }
+
+  const discountedPrice = parseNumeric(
+    product?.discountPrice
+    ?? product?.salePrice,
+    0
+  );
+  const listedPrice = parseNumeric(product?.price, 0);
+
+  if (
+    Number.isFinite(discountedPrice)
+    && Number.isFinite(listedPrice)
+    && discountedPrice > 0
+    && listedPrice > discountedPrice
+  ) {
+    return Math.round(((listedPrice - discountedPrice) / listedPrice) * 100);
   }
 
   const originalPrice = parseNumeric(
@@ -73,17 +96,11 @@ export const getProductDiscountPercent = (product = {}) => {
  * @returns {object} - { unitPrice, totalPrice, discount, discountPercent }
  */
 export const calculatePrice = (basePrice, quantity, options = {}) => {
-  const { disableBulkDiscount = false } = options;
-  let discountPercent = 0;
-
-  // Discount tiers
-  if (!disableBulkDiscount && quantity >= 10) {
-    discountPercent = 15; // 15% off for 10+ items
-  } else if (!disableBulkDiscount && quantity >= 5) {
-    discountPercent = 10; // 10% off for 5-9 items
-  } else if (!disableBulkDiscount && quantity >= 3) {
-    discountPercent = 5; // 5% off for 3-4 items
-  }
+  const _options = options;
+  const _quantity = quantity;
+  void _options;
+  void _quantity;
+  const discountPercent = 0;
 
   const discount = (basePrice * discountPercent) / 100;
   const unitPrice = basePrice - discount;
@@ -103,14 +120,12 @@ export const calculatePrice = (basePrice, quantity, options = {}) => {
  * @returns {object} - Information about current and next discount tiers
  */
 export const getDiscountInfo = (quantity) => {
-  const tiers = [
-    { min: 10, discount: 15, label: "10+ items: 15% off" },
-    { min: 5, discount: 10, label: "5-9 items: 10% off" },
-    { min: 3, discount: 5, label: "3-4 items: 5% off" },
-  ];
+  const _quantity = quantity;
+  void _quantity;
+  const tiers = [];
 
-  const currentTier = tiers.find((tier) => quantity >= tier.min);
-  const nextTier = tiers.find((tier) => quantity < tier.min);
+  const currentTier = null;
+  const nextTier = null;
 
   return {
     currentTier,

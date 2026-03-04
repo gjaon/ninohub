@@ -10,6 +10,9 @@ const {
 } = require("./helpers/db");
 
 const MarketplaceOrder = require("../models/marketplaceOrderModel");
+const MarketplaceProductCache = require("../models/marketplaceProductCacheModel");
+const BusinessEvent = require("../models/businessEventModel");
+const providerClient = require("../services/marketplace/providerClient");
 const {
   ingestProviderWebhook,
   processProviderDelivery,
@@ -139,4 +142,75 @@ test("rejects tampered marketplace webhook signature", async () => {
 
   assert.equal(res.statusCode, 401);
   assert.equal(res.body?.message, "Invalid webhook signature");
+});
+
+test("marketplace.listing.updated refreshes cache from provider and emits refresh metadata", async () => {
+  const originalFetchProviderListingById = providerClient.fetchProviderListingById;
+  providerClient.fetchProviderListingById = async ({ listingId }) => ({
+    listingType: "group",
+    groupId: listingId,
+    groupName: "Realtime Discount Group",
+    category: "Rings",
+    variants: [
+      {
+        variantId: "variant-1",
+        name: "Variant 1",
+        price: {
+          base: 12000,
+          effective: 9000,
+        },
+        discount: {
+          percent: 25,
+          label: "Flash Sale",
+        },
+        stock: { quantity: 5 },
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  });
+
+  try {
+    const payload = {
+      id: "evt-provider-listing-1",
+      type: "marketplace.listing.updated",
+      timestamp: Date.now(),
+      correlationId: "corr-listing-1",
+      data: {
+        listingId: "group-listing-1",
+      },
+    };
+
+    const recorded = await recordInboundDelivery({
+      provider: "provider",
+      eventId: payload.id,
+      reference: payload.data.listingId,
+      signatureVerified: true,
+      payload,
+    });
+
+    await processProviderDelivery(recorded.delivery);
+
+    const cachedListing = await MarketplaceProductCache.findOne({
+      providerProductId: "group-listing-1",
+    }).lean();
+
+    assert.ok(cachedListing);
+    assert.equal(cachedListing.priceBase, 12000);
+    assert.equal(cachedListing.priceEffective, 9000);
+    assert.equal(cachedListing.discountPercent, 25);
+    assert.equal(Array.isArray(cachedListing.variantSnapshots), true);
+    assert.equal(cachedListing.variantSnapshots.length, 1);
+    assert.equal(cachedListing.variantSnapshots[0].discountPercent, 25);
+
+    const emittedEvent = await BusinessEvent.findOne({
+      eventType: "marketplace.listing.updated",
+    }).sort({ createdAt: -1 }).lean();
+
+    assert.ok(emittedEvent);
+    assert.equal(emittedEvent.payload?.listingRefresh?.listingId, "group-listing-1");
+    assert.equal(emittedEvent.payload?.listingRefresh?.refreshed, true);
+    assert.equal(emittedEvent.payload?.listingRefresh?.fallbackSync, false);
+  } finally {
+    providerClient.fetchProviderListingById = originalFetchProviderListingById;
+  }
 });

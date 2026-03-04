@@ -32,6 +32,26 @@ const marketplaceProductCacheSchema = mongoose.Schema(
       type: Number,
       required: true,
     },
+    priceBase: {
+      type: Number,
+      default: 0,
+    },
+    priceEffective: {
+      type: Number,
+      default: 0,
+    },
+    discountPercent: {
+      type: Number,
+      default: 0,
+    },
+    discountMetadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    variantSnapshots: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
     currency: {
       type: String,
       default: "NGN",

@@ -36,7 +36,7 @@
 .product-card .discount-badge {
   position: absolute;
   top: 10px;
-  left: 10px;
+  right: 10px;
   background: rgba(44, 44, 44, 0.82);
   color: var(--color-surface);
   border-radius: 999px;

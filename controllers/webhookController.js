@@ -15,6 +15,9 @@ const {
 } = require("../services/marketplace/webhookDeliveryService");
 const { publishEvent } = require("../services/marketplace/businessEventBus");
 const { recordMetric } = require("../services/marketplace/metricsService");
+const {
+  refreshListingProjectionFromWebhook,
+} = require("../services/marketplace/inventoryProjectionService");
 
 const PROVIDER_TO_LOCAL_STATUS = {
   placed: "placed",
@@ -179,6 +182,45 @@ const processPaystackDelivery = async (delivery) => {
 
 const processProviderDelivery = async (delivery) => {
   const { eventType, eventId, eventData, occurredAt, payload } = resolveProviderEventFields(delivery);
+  const normalizedEventType = String(eventType || "").toLowerCase();
+
+  if (normalizedEventType === "marketplace.listing.updated") {
+    const listingId = String(
+      eventData?.listingId
+      || eventData?.id
+      || eventData?.productId
+      || eventData?.groupId
+      || ""
+    ).trim();
+
+    const listingRefresh = await refreshListingProjectionFromWebhook({
+      listingId,
+      trigger: "webhook-provider-listing-updated",
+      correlationId:
+        payload?.correlationId
+        || payload?.metadata?.correlationId
+        || null,
+    });
+
+    await recordMetric("marketplace.webhook.provider.listing_updated", {
+      refresh: listingRefresh?.refreshed ? "refreshed" : "fallback",
+      fallback: listingRefresh?.fallbackSync ? "yes" : "no",
+      listingId: listingId || "missing",
+    });
+
+    await publishEvent({
+      eventType: eventType || "marketplace.listing.updated",
+      source: "webhook.provider",
+      buyerId: null,
+      correlationId: payload?.metadata?.correlationId || payload?.correlationId || null,
+      payload: {
+        ...payload,
+        listingRefresh,
+      },
+    });
+
+    return;
+  }
 
   const providerOrderId = String(eventData.orderId || "");
   const providerOrderNumber = String(eventData.orderNumber || "");

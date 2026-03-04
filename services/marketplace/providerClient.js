@@ -205,6 +205,41 @@ const fetchInventory = async () => {
   };
 };
 
+const fetchProviderListingById = async ({ listingId }) => {
+  const normalizedListingId = String(listingId || "").trim();
+  if (!normalizedListingId) {
+    return null;
+  }
+
+  const { providerInventoryPaths, integrationListingsPath } = getMarketplaceConfig();
+  const candidatePaths = [integrationListingsPath, ...providerInventoryPaths].filter(Boolean);
+  const uniquePaths = [...new Set(candidatePaths)];
+
+  let lastError = null;
+  for (const endpointPath of uniquePaths) {
+    try {
+      const response = await requestWithRetry((client) =>
+        client.get(`${endpointPath}/${encodeURIComponent(normalizedListingId)}`)
+      );
+      const payload = response?.data || {};
+      const listing = normalizeOrderEnvelope(payload) || payload;
+      return listing?.listing ? listing.listing : listing;
+    } catch (error) {
+      if (error?.status === 404) {
+        lastError = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (lastError?.status === 404) {
+    return null;
+  }
+
+  return null;
+};
+
 const normalizeOrderEnvelope = (payload) => {
   if (!payload || typeof payload !== "object") {
     return null;
@@ -645,6 +680,7 @@ const upsertProviderWebhookEndpoint = async ({
 
 module.exports = {
   fetchInventory,
+  fetchProviderListingById,
   createProviderOrder,
   confirmProviderOrderPayment,
   fetchProviderOrder,

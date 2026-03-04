@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require("uuid");
 const MarketplaceProductCache = require("../../models/marketplaceProductCacheModel");
-const { fetchInventory } = require("./providerClient");
+const providerClient = require("./providerClient");
 const { publishEvent } = require("./businessEventBus");
 
 let lastSuccessfulSyncAt = 0;
@@ -18,6 +18,15 @@ const toValidDate = (value) => {
 
   const parsedDate = new Date(value);
   return Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
+};
+
+const toNullableDate = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const parsedDate = new Date(value);
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
 };
 
 const toSafeString = (value, fallback = "") => {
@@ -56,11 +65,143 @@ const resolveImageValue = (value) => {
   return "";
 };
 
+const extractDiscountPercent = (value) => {
+  const parsed = toFiniteNumber(value, 0);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, Math.round(parsed)));
+};
+
+const normalizeDiscountSnapshot = ({
+  effectiveCandidates = [],
+  baseCandidates = [],
+  discountPercentCandidates = [],
+  metadataCandidates = [],
+}) => {
+  const effective = toFiniteNumber(
+    effectiveCandidates.find((candidate) => Number.isFinite(toFiniteNumber(candidate, NaN))),
+    0
+  );
+
+  const parsedBase = toFiniteNumber(
+    baseCandidates.find((candidate) => Number.isFinite(toFiniteNumber(candidate, NaN))),
+    NaN
+  );
+  const base = Number.isFinite(parsedBase) && parsedBase > 0 ? parsedBase : effective;
+
+  const derivedPercent = base > effective && base > 0
+    ? Math.round(((base - effective) / base) * 100)
+    : 0;
+  const providedPercent = extractDiscountPercent(
+    discountPercentCandidates.find((candidate) => Number.isFinite(toFiniteNumber(candidate, NaN)))
+  );
+
+  const discountPercent = providedPercent > 0 ? providedPercent : derivedPercent;
+
+  const rawMetadata = metadataCandidates.find(
+    (candidate) => candidate && typeof candidate === "object" && Object.keys(candidate).length
+  ) || null;
+
+  return {
+    base,
+    effective,
+    discountPercent,
+    metadata: {
+      hasDiscount: discountPercent > 0,
+      source: rawMetadata ? "provider" : "derived",
+      startsAt: toNullableDate(rawMetadata?.startsAt || rawMetadata?.startAt || rawMetadata?.validFrom),
+      endsAt: toNullableDate(rawMetadata?.endsAt || rawMetadata?.endAt || rawMetadata?.validUntil),
+      label: toSafeString(rawMetadata?.label || rawMetadata?.name || rawMetadata?.reason, "") || null,
+      raw: rawMetadata,
+    },
+  };
+};
+
+const normalizeVariantSnapshot = (variant, fallback = {}) => {
+  const pricing = normalizeDiscountSnapshot({
+    effectiveCandidates: [
+      variant?.price?.effective,
+      variant?.effectivePrice,
+      variant?.currentPrice,
+      variant?.salePrice,
+      variant?.price,
+      fallback?.price,
+    ],
+    baseCandidates: [
+      variant?.price?.base,
+      variant?.basePrice,
+      variant?.originalPrice,
+      variant?.listPrice,
+      variant?.price?.original,
+      fallback?.price,
+    ],
+    discountPercentCandidates: [
+      variant?.discountPercent,
+      variant?.discount?.percent,
+      variant?.price?.discountPercent,
+    ],
+    metadataCandidates: [
+      variant?.discount,
+      variant?.price?.discount,
+      variant?.price?.promotion,
+    ],
+  });
+
+  return {
+    variantId: toSafeString(variant?.variantId || variant?.id, ""),
+    id: toSafeString(variant?.variantId || variant?.id, ""),
+    name: toSafeString(variant?.name || variant?.variantName || variant?.id, ""),
+    sku: toSafeString(variant?.sku, "") || null,
+    price: pricing.effective,
+    priceEffective: pricing.effective,
+    priceBase: pricing.base,
+    discountPercent: pricing.discountPercent,
+    discountMetadata: pricing.metadata,
+    variantSnapshots: [],
+    currency: toSafeString(variant?.currency || variant?.price?.currency || fallback?.currency, "NGN") || "NGN",
+    availableQuantity: toFiniteNumber(
+      variant?.stock?.quantity ?? variant?.stock ?? variant?.quantity ?? variant?.availableQuantity,
+      0
+    ),
+    image: resolveImageValue(variant?.image || variant?.images || fallback?.image),
+    images: Array.isArray(variant?.images) ? variant.images : [],
+    metadata: variant,
+  };
+};
+
 const mapFlatProviderProduct = (item) => {
   const providerProductId = item?.id || item?.productId || item?.sku;
   if (!providerProductId) {
     return null;
   }
+
+  const pricing = normalizeDiscountSnapshot({
+    effectiveCandidates: [
+      item?.price?.effective,
+      item?.effectivePrice,
+      item?.currentPrice,
+      item?.salePrice,
+      item?.price,
+    ],
+    baseCandidates: [
+      item?.price?.base,
+      item?.basePrice,
+      item?.originalPrice,
+      item?.listPrice,
+      item?.price?.original,
+    ],
+    discountPercentCandidates: [
+      item?.discountPercent,
+      item?.discount?.percent,
+      item?.price?.discountPercent,
+    ],
+    metadataCandidates: [
+      item?.discount,
+      item?.price?.discount,
+      item?.price?.promotion,
+    ],
+  });
 
   return {
     providerProductId: String(providerProductId),
@@ -69,7 +210,12 @@ const mapFlatProviderProduct = (item) => {
     description: toSafeString(item.description, ""),
     category: toSafeString(item.category, "Uncategorized"),
     image: resolveImageValue(item.image || item.images || item.media),
-    price: toFiniteNumber(item?.price?.effective ?? item?.price?.base ?? item.price, 0),
+    price: pricing.effective,
+    priceBase: pricing.base,
+    priceEffective: pricing.effective,
+    discountPercent: pricing.discountPercent,
+    discountMetadata: pricing.metadata,
+    variantSnapshots: [],
     currency: toSafeString(item.currency || item?.price?.currency, "NGN") || "NGN",
     availableQuantity: toFiniteNumber(
       item?.availableQuantity ?? item?.stock?.quantity ?? item?.stock ?? item?.quantity,
@@ -87,6 +233,33 @@ const mapSellSquareSingleListing = (item) => {
     return null;
   }
 
+  const pricing = normalizeDiscountSnapshot({
+    effectiveCandidates: [
+      item?.price?.effective,
+      item?.effectivePrice,
+      item?.currentPrice,
+      item?.salePrice,
+      item?.price,
+    ],
+    baseCandidates: [
+      item?.price?.base,
+      item?.basePrice,
+      item?.originalPrice,
+      item?.listPrice,
+      item?.price?.original,
+    ],
+    discountPercentCandidates: [
+      item?.discountPercent,
+      item?.discount?.percent,
+      item?.price?.discountPercent,
+    ],
+    metadataCandidates: [
+      item?.discount,
+      item?.price?.discount,
+      item?.price?.promotion,
+    ],
+  });
+
   return {
     providerProductId: String(providerProductId),
     sku: toSafeString(item.sku, "") || null,
@@ -94,7 +267,11 @@ const mapSellSquareSingleListing = (item) => {
     description: toSafeString(item.description, ""),
     category: toSafeString(item.category, "Uncategorized"),
     image: resolveImageValue(item.image || item.images),
-    price: toFiniteNumber(item?.price?.effective ?? item?.price?.base, 0),
+    price: pricing.effective,
+    priceBase: pricing.base,
+    priceEffective: pricing.effective,
+    discountPercent: pricing.discountPercent,
+    discountMetadata: pricing.metadata,
     currency: toSafeString(item.currency || item?.price?.currency, "NGN") || "NGN",
     availableQuantity: toFiniteNumber(item?.stock?.quantity, 0),
     isActive: item.listed !== false,
@@ -112,24 +289,19 @@ const mapSellSquareGroupListing = (item) => {
   const sourceVariants = Array.isArray(item.variants) ? item.variants : [];
   const normalizedVariants = sourceVariants
     .map((variant) => {
-      const variantId = toSafeString(variant?.variantId || variant?.id, "");
-      if (!variantId) {
+      const variantSnapshot = normalizeVariantSnapshot(variant, {
+        price: item?.price,
+        currency: item?.currency,
+        image: item?.image || item?.images,
+      });
+
+      if (!variantSnapshot.variantId) {
         return null;
       }
 
-      const price = toFiniteNumber(variant?.price?.effective ?? variant?.price?.base ?? variant?.price, 0);
-      const stock = toFiniteNumber(variant?.stock?.quantity ?? variant?.stock ?? variant?.quantity, 0);
       return {
-        variantId,
-        id: variantId,
-        name: toSafeString(variant?.name, variantId),
-        sku: toSafeString(variant?.sku, "") || null,
-        price,
-        currency: toSafeString(variant?.currency || variant?.price?.currency, "NGN") || "NGN",
-        availableQuantity: stock,
-        image: resolveImageValue(variant?.image || variant?.images || item?.image || item?.images),
-        images: Array.isArray(variant?.images) ? variant.images : [],
-        metadata: variant,
+        ...variantSnapshot,
+        name: variantSnapshot.name || variantSnapshot.variantId,
       };
     })
     .filter(Boolean);
@@ -139,9 +311,43 @@ const mapSellSquareGroupListing = (item) => {
   }
 
   const variantPrices = normalizedVariants
-    .map((variant) => toFiniteNumber(variant?.price, 0))
+    .map((variant) => toFiniteNumber(variant?.priceEffective, 0))
     .filter((price) => Number.isFinite(price) && price > 0);
   const representativePrice = variantPrices.length ? Math.min(...variantPrices) : 0;
+
+  const representativeVariant = normalizedVariants
+    .find((variant) => toFiniteNumber(variant?.priceEffective, 0) === representativePrice)
+    || normalizedVariants[0];
+
+  const pricing = normalizeDiscountSnapshot({
+    effectiveCandidates: [
+      item?.price?.effective,
+      item?.effectivePrice,
+      item?.currentPrice,
+      item?.salePrice,
+      representativeVariant?.priceEffective,
+      representativePrice,
+    ],
+    baseCandidates: [
+      item?.price?.base,
+      item?.basePrice,
+      item?.originalPrice,
+      item?.listPrice,
+      representativeVariant?.priceBase,
+    ],
+    discountPercentCandidates: [
+      item?.discountPercent,
+      item?.discount?.percent,
+      item?.price?.discountPercent,
+      representativeVariant?.discountPercent,
+    ],
+    metadataCandidates: [
+      item?.discount,
+      item?.price?.discount,
+      item?.price?.promotion,
+      representativeVariant?.discountMetadata?.raw,
+    ],
+  });
   const totalAvailable = normalizedVariants.reduce(
     (sum, variant) => sum + toFiniteNumber(variant?.availableQuantity, 0),
     0
@@ -155,7 +361,12 @@ const mapSellSquareGroupListing = (item) => {
       description: toSafeString(item.description, ""),
       category: toSafeString(item.category, "Uncategorized"),
       image: resolveImageValue(item.image || item.images || normalizedVariants[0]?.image),
-      price: representativePrice,
+      price: pricing.effective,
+      priceBase: pricing.base,
+      priceEffective: pricing.effective,
+      discountPercent: pricing.discountPercent,
+      discountMetadata: pricing.metadata,
+      variantSnapshots: normalizedVariants,
       currency:
         toSafeString(item.currency || normalizedVariants[0]?.currency || item?.price?.currency, "NGN") || "NGN",
       availableQuantity: totalAvailable,
@@ -199,7 +410,7 @@ const syncInventoryProjection = async ({ trigger = "manual", correlationId } = {
     correlationId: nextCorrelationId,
   });
 
-  const fetchedInventory = await fetchInventory();
+  const fetchedInventory = await providerClient.fetchInventory();
   const providerInventory = Array.isArray(fetchedInventory) ? fetchedInventory : [];
 
   console.info("[marketplace:inventory-sync] provider payload received", {
@@ -292,6 +503,80 @@ const syncInventoryProjection = async ({ trigger = "manual", correlationId } = {
   };
 };
 
+const upsertMappedProducts = async ({ mappedItems = [] }) => {
+  let syncedCount = 0;
+  for (const mapped of mappedItems) {
+    if (!mapped || !mapped.providerProductId) {
+      continue;
+    }
+
+    if (!Number.isFinite(mapped.availableQuantity) || !Number.isFinite(mapped.priceEffective || mapped.price)) {
+      continue;
+    }
+
+    await MarketplaceProductCache.updateOne(
+      { providerProductId: mapped.providerProductId },
+      { $set: mapped },
+      { upsert: true }
+    );
+    syncedCount += 1;
+  }
+
+  return syncedCount;
+};
+
+const refreshListingProjectionFromWebhook = async ({
+  listingId,
+  trigger = "webhook-listing-updated",
+  correlationId,
+} = {}) => {
+  const nextCorrelationId = correlationId || uuidv4();
+  const normalizedListingId = toSafeString(listingId, "");
+
+  if (!normalizedListingId) {
+    const fallback = await syncInventoryProjection({
+      trigger: `${trigger}-missing-listing-id-fallback-full-sync`,
+      correlationId: nextCorrelationId,
+    });
+
+    return {
+      refreshed: false,
+      fallbackSync: true,
+      reason: "missing-listing-id",
+      correlationId: nextCorrelationId,
+      ...fallback,
+    };
+  }
+
+  const listing = await providerClient.fetchProviderListingById({ listingId: normalizedListingId });
+  if (!listing) {
+    const fallback = await syncInventoryProjection({
+      trigger: `${trigger}-listing-not-found-fallback-full-sync`,
+      correlationId: nextCorrelationId,
+    });
+
+    return {
+      refreshed: false,
+      fallbackSync: true,
+      reason: "listing-not-found",
+      listingId: normalizedListingId,
+      correlationId: nextCorrelationId,
+      ...fallback,
+    };
+  }
+
+  const mappedItems = mapProviderProducts(listing);
+  const syncedCount = await upsertMappedProducts({ mappedItems });
+
+  return {
+    refreshed: syncedCount > 0,
+    fallbackSync: false,
+    listingId: normalizedListingId,
+    correlationId: nextCorrelationId,
+    syncedCount,
+  };
+};
+
 const syncInventoryProjectionIfStale = async ({
   trigger = "stale-check",
   maxAgeMs = 30000,
@@ -341,6 +626,11 @@ const consolidateProjectedRows = (rows = []) => {
           category: toSafeString(row?.category, "Uncategorized"),
           image: toSafeString(row?.image, ""),
           price: toFiniteNumber(row?.price, 0),
+          priceBase: toFiniteNumber(row?.priceBase ?? row?.metadata?.priceBase ?? row?.price, 0),
+          priceEffective: toFiniteNumber(row?.priceEffective ?? row?.price, 0),
+          discountPercent: toFiniteNumber(row?.discountPercent, 0),
+          discountMetadata: row?.discountMetadata || {},
+          variantSnapshots: [],
           currency: toSafeString(row?.currency, "NGN") || "NGN",
           availableQuantity: 0,
           isActive: true,
@@ -367,6 +657,25 @@ const consolidateProjectedRows = (rows = []) => {
         name: toSafeString(row?.metadata?.name || row?.name, variantId),
         sku: toSafeString(row?.sku, "") || null,
         price: toFiniteNumber(row?.price, 0),
+        priceBase: toFiniteNumber(row?.priceBase ?? row?.metadata?.priceBase ?? row?.price, 0),
+        priceEffective: toFiniteNumber(row?.priceEffective ?? row?.price, 0),
+        discountPercent: toFiniteNumber(row?.discountPercent, 0),
+        discountMetadata: row?.discountMetadata || {},
+        currency: toSafeString(row?.currency, "NGN") || "NGN",
+        availableQuantity: toFiniteNumber(row?.availableQuantity, 0),
+        image: toSafeString(row?.image, ""),
+        images: Array.isArray(row?.metadata?.images) ? row.metadata.images : [],
+      });
+      grouped.variantSnapshots.push({
+        variantId,
+        id: variantId,
+        name: toSafeString(row?.metadata?.name || row?.name, variantId),
+        sku: toSafeString(row?.sku, "") || null,
+        price: toFiniteNumber(row?.price, 0),
+        priceBase: toFiniteNumber(row?.priceBase ?? row?.metadata?.priceBase ?? row?.price, 0),
+        priceEffective: toFiniteNumber(row?.priceEffective ?? row?.price, 0),
+        discountPercent: toFiniteNumber(row?.discountPercent, 0),
+        discountMetadata: row?.discountMetadata || {},
         currency: toSafeString(row?.currency, "NGN") || "NGN",
         availableQuantity: toFiniteNumber(row?.availableQuantity, 0),
         image: toSafeString(row?.image, ""),
@@ -377,6 +686,10 @@ const consolidateProjectedRows = (rows = []) => {
       const variantPrice = toFiniteNumber(row?.price, 0);
       if (variantPrice > 0 && (!grouped.price || variantPrice < grouped.price)) {
         grouped.price = variantPrice;
+        grouped.priceEffective = toFiniteNumber(row?.priceEffective ?? row?.price, 0);
+        grouped.priceBase = toFiniteNumber(row?.priceBase ?? row?.metadata?.priceBase ?? row?.price, 0);
+        grouped.discountPercent = toFiniteNumber(row?.discountPercent, 0);
+        grouped.discountMetadata = row?.discountMetadata || {};
       }
 
       if (!grouped.image && row?.image) {
@@ -411,8 +724,11 @@ const getProjectedProducts = async () => {
 module.exports = {
   syncInventoryProjection,
   syncInventoryProjectionIfStale,
+  refreshListingProjectionFromWebhook,
   getProjectedProducts,
   __testables: {
     consolidateProjectedRows,
+    normalizeDiscountSnapshot,
+    mapProviderProducts,
   },
 };

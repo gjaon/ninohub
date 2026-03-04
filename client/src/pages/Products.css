@@ -183,6 +183,7 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
+  width: 100%;
 }
 
 .pagination-btn,
@@ -225,6 +226,8 @@
 
 .pagination-ellipsis {
   color: var(--color-text-muted);
+  min-width: 14px;
+  text-align: center;
 }
 
 @media (max-width: 768px) {
@@ -244,5 +247,35 @@
 @media (max-width: 540px) {
   .products-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pagination {
+    gap: 4px;
+    overflow: hidden;
+  }
+
+  .pagination-btn,
+  .pagination-number {
+    min-width: 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    padding: 0;
+  }
+
+  .pagination-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .pagination-numbers {
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .pagination-ellipsis {
+    min-width: 12px;
+    font-size: 0.82rem;
   }
 }

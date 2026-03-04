@@ -16,6 +16,21 @@ const normalizeJoinUrl = (base, path) => {
 
 const generateWebhookSecret = () => crypto.randomBytes(32).toString("hex");
 
+const DEFAULT_PROVIDER_WEBHOOK_EVENT_TYPES = [
+  "marketplace.order.placed",
+  "marketplace.order.payment_confirmed",
+  "marketplace.order.accepted",
+  "marketplace.order.rejected",
+  "marketplace.order.processing",
+  "marketplace.order.shipped",
+  "marketplace.order.delivered",
+  "marketplace.order.line.updated",
+  "marketplace.listing.updated",
+  "marketplace.webhook.delivery",
+  "marketplace.webhook.delivery.succeeded",
+  "marketplace.webhook.delivery.failed",
+];
+
 const shouldRotateSecret = ({ endpoint, rotateDays }) => {
   if (!endpoint?.updatedAt) return true;
   const thresholdMs = Math.max(1, Number(rotateDays || 30)) * 24 * 60 * 60 * 1000;
@@ -63,15 +78,7 @@ const ensureProviderWebhookEndpointRegistered = async () => {
     endpointId: endpoint?.providerEndpointId || null,
     url: targetUrl,
     secret: sharedSecret,
-    eventTypes: [
-      "marketplace.order.payment_confirmed",
-      "marketplace.order.accepted",
-      "marketplace.order.rejected",
-      "marketplace.order.processing",
-      "marketplace.order.shipped",
-      "marketplace.order.delivered",
-      "marketplace.order.line.updated",
-    ],
+    eventTypes: DEFAULT_PROVIDER_WEBHOOK_EVENT_TYPES,
   });
 
   endpoint = await MarketplaceWebhookEndpoint.findOneAndUpdate(

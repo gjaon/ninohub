@@ -77,10 +77,24 @@ const normalizeVariants = (variants = []) => {
   }
 
   return variants.map((variant) => {
-    const effectivePrice = Number(variant?.price?.effective ?? variant?.price ?? 0);
-    const originalPrice = Number(variant?.price?.base ?? variant?.originalPrice ?? effectivePrice);
+    const effectivePrice = Number(
+      variant?.priceEffective
+      ?? variant?.price?.effective
+      ?? variant?.effectivePrice
+      ?? variant?.price
+      ?? 0
+    );
+    const originalPrice = Number(
+      variant?.priceBase
+      ?? variant?.price?.base
+      ?? variant?.basePrice
+      ?? variant?.originalPrice
+      ?? effectivePrice
+    );
     const discountPercent =
-      originalPrice > effectivePrice && originalPrice > 0
+      Number.isFinite(Number(variant?.discountPercent)) && Number(variant?.discountPercent) > 0
+        ? Math.round(Number(variant?.discountPercent))
+        : originalPrice > effectivePrice && originalPrice > 0
         ? Math.round(((originalPrice - effectivePrice) / originalPrice) * 100)
         : 0;
 
@@ -97,8 +111,11 @@ const normalizeVariants = (variants = []) => {
       id: toSafeString(variant?.variantId || variant?.id),
       name: toSafeString(variant?.name || variant?.variantName || variant?.variantId || variant?.id),
       price: effectivePrice,
+      effectivePrice,
+      basePrice: originalPrice,
       originalPrice,
       discountPercent,
+      discountMetadata: variant?.discountMetadata || variant?.discount || null,
       image:
         toSafeString(variant?.image)
         || normalizedVariantImages[0]
@@ -110,21 +127,35 @@ const normalizeVariants = (variants = []) => {
 
 const toFrontendProduct = (product) => {
   const effectivePrice = Number(
+    product?.priceEffective
+    ?? product?.effectivePrice
+    ??
     product?.metadata?.price?.effective
     ?? product?.price?.effective
     ?? product?.price
     ?? 0
   );
   const originalPrice = Number(
+    product?.priceBase
+    ?? product?.basePrice
+    ??
     product?.metadata?.price?.base
     ?? product?.price?.base
     ?? product?.originalPrice
     ?? effectivePrice
   );
   const discountPercent =
-    originalPrice > effectivePrice && originalPrice > 0
+    Number.isFinite(Number(product?.discountPercent)) && Number(product?.discountPercent) > 0
+      ? Math.round(Number(product?.discountPercent))
+      : originalPrice > effectivePrice && originalPrice > 0
       ? Math.round(((originalPrice - effectivePrice) / originalPrice) * 100)
       : 0;
+
+  const variantSource = Array.isArray(product?.variantSnapshots) && product.variantSnapshots.length
+    ? product.variantSnapshots
+    : Array.isArray(product?.metadata?.variants)
+      ? product.metadata.variants
+      : product?.variants;
 
   return {
     ...product,
@@ -137,8 +168,11 @@ const toFrontendProduct = (product) => {
     category: product.category || "Uncategorized",
     image: toSafeString(product.image),
     price: effectivePrice,
+    effectivePrice,
+    basePrice: originalPrice,
     originalPrice,
     discountPercent,
+    discountMetadata: product?.discountMetadata || product?.metadata?.discount || null,
     sku: product.sku || null,
     availableQuantity: Number(product.availableQuantity ?? 0),
     customizable: Boolean(product.customizable),
@@ -148,9 +182,7 @@ const toFrontendProduct = (product) => {
     parentGroupId: product?.metadata?.groupId || product?.parentGroupId || null,
     variantId: product?.metadata?.variantId || product?.variantId || null,
     variantName: product?.metadata?.name || product?.variantName || null,
-    variants: normalizeVariants(
-      Array.isArray(product?.metadata?.variants) ? product.metadata.variants : product?.variants
-    ),
+    variants: normalizeVariants(variantSource),
     syncedAt: product.providerUpdatedAt || product.updatedAt || null,
     ...(function withNormalizedImages() {
       const normalizedImages = collectProductImages(product);
@@ -246,4 +278,8 @@ const getProductById = async (req, res) => {
 module.exports = {
   getProducts,
   getProductById,
+  __testables: {
+    toFrontendProduct,
+    normalizeVariants,
+  },
 };

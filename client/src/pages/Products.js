@@ -24,6 +24,8 @@ const Products = () => {
   const endIndex = startIndex + itemsPerPage;
   const currentProducts = filteredItems.slice(startIndex, endIndex);
 
+  console.log({ currentProducts, startIndex, endIndex, currentPage, totalPages });
+
   // Reset to page 1 when filters change
   React.useEffect(() => {
     setCurrentPage(1);
@@ -63,6 +65,37 @@ const Products = () => {
       setCurrentPage(currentPage + 1);
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
+  };
+
+  const getPaginationItems = () => {
+    if (totalPages <= 1) {
+      return [1];
+    }
+
+    const basePages = [
+      1,
+      Math.max(1, currentPage - 1),
+      currentPage,
+      Math.min(totalPages, currentPage + 1),
+      totalPages,
+    ];
+
+    const uniqueSortedPages = Array.from(
+      new Set(basePages.filter((page) => page >= 1 && page <= totalPages))
+    ).sort((a, b) => a - b);
+
+    const items = [];
+    uniqueSortedPages.forEach((page, index) => {
+      if (index > 0) {
+        const previousPage = uniqueSortedPages[index - 1];
+        if (page - previousPage > 1) {
+          items.push("...");
+        }
+      }
+      items.push(page);
+    });
+
+    return items;
   };
 
 
@@ -185,36 +218,26 @@ const Products = () => {
           </button>
 
           <div className="pagination-numbers">
-            {[...Array(totalPages)].map((_, index) => {
-              const pageNum = index + 1;
-              // Show first page, last page, current page, and pages around current
-              if (
-                pageNum === 1 ||
-                pageNum === totalPages ||
-                (pageNum >= currentPage - 1 && pageNum <= currentPage + 1)
-              ) {
+            {getPaginationItems().map((item, index) => {
+              if (item === "...") {
                 return (
-                  <button
-                    key={pageNum}
-                    className={`pagination-number ${
-                      currentPage === pageNum ? "active" : ""
-                    }`}
-                    onClick={() => handlePageChange(pageNum)}
-                  >
-                    {pageNum}
-                  </button>
-                );
-              } else if (
-                pageNum === currentPage - 2 ||
-                pageNum === currentPage + 2
-              ) {
-                return (
-                  <span key={pageNum} className="pagination-ellipsis">
+                  <span key={`ellipsis-${index}`} className="pagination-ellipsis">
                     ...
                   </span>
                 );
               }
-              return null;
+
+              return (
+                <button
+                  key={item}
+                  className={`pagination-number ${
+                    currentPage === item ? "active" : ""
+                  }`}
+                  onClick={() => handlePageChange(item)}
+                >
+                  {item}
+                </button>
+              );
             })}
           </div>
 
