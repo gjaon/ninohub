@@ -26,6 +26,8 @@ const productsSlice = createSlice({
       state.categories = Array.from(
         new Set(action.payload.map((item) => item.category).filter(Boolean))
       ).sort();
+      state.loading = false;
+      state.error = null;
     },
     filterByCategory: (state, action) => {
       state.selectedCategory = action.payload;
@@ -50,6 +52,7 @@ const productsSlice = createSlice({
     },
     setError: (state, action) => {
       state.error = action.payload;
+      state.loading = false;
     },
   },
 });

@@ -1,13 +1,46 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useSelector, useDispatch } from "react-redux";
 import { toast } from "sonner";
 import { startCustomization } from "../redux/slices/customizationSlice";
-import { calculatePrice, getDiscountInfo } from "../utils/pricing";
+import { calculatePrice, getProductDiscountPercent, resolveOriginalPrice } from "../utils/pricing";
 import useCartSocket from "../hooks/useCartSocket";
 import { getProductImageUrl } from "../utils/image";
 import ImageZoom from "../components/ImageZoom";
 import "./ProductDetail.css";
+
+const collectImageValues = (value, collector = []) => {
+  if (!value) {
+    return collector;
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const normalized = String(value).trim();
+    if (normalized) {
+      collector.push(normalized);
+    }
+    return collector;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectImageValues(entry, collector));
+    return collector;
+  }
+
+  if (typeof value === "object") {
+    ["url", "filePath", "secure_url", "src", "image"].forEach((key) => {
+      collectImageValues(value?.[key], collector);
+    });
+  }
+
+  return collector;
+};
+
+const normalizeImageList = (...values) => {
+  const images = [];
+  values.forEach((value) => collectImageValues(value, images));
+  return Array.from(new Set(images.filter(Boolean)));
+};
 
 const ProductDetail = () => {
   const { id } = useParams();
@@ -16,19 +49,99 @@ const ProductDetail = () => {
   const { items: products, loading: productsLoading } = useSelector(
     (state) => state.products
   );
-  const product = products.find((p) => p.id === parseInt(id));
+  const product = products.find((p) => String(p.id) === String(id));
   const [quantity, setQuantity] = useState(1);
+  const [selectedVariantId, setSelectedVariantId] = useState("");
+  const [selectedImage, setSelectedImage] = useState("");
   const { addToCartSocket } = useCartSocket();
+  const detailTitle = product?.listingType === "group"
+    ? (product?.groupName || product?.name)
+    : product?.name;
+
+  const availableVariants = Array.isArray(product?.variants) ? product.variants : [];
+  const selectedVariant =
+    availableVariants.find(
+      (variant) => String(variant?.variantId || variant?.id) === String(selectedVariantId)
+    ) || null;
+
+  const productImages = useMemo(() => {
+    if (!product) return [];
+    return normalizeImageList(
+      product.images,
+      product.primaryImage,
+      product.selectedImage,
+      product.image
+    );
+  }, [product]);
+
+  const selectedVariantImages = useMemo(() => {
+    if (!selectedVariant) return [];
+    return normalizeImageList(
+      selectedVariant.images,
+      selectedVariant.image,
+      selectedVariant.imageUrl
+    );
+  }, [selectedVariant]);
+
+  const allVariantImages = useMemo(() => {
+    if (!availableVariants.length) return [];
+    return normalizeImageList(
+      availableVariants.map((variant) => [variant?.images, variant?.image, variant?.imageUrl])
+    );
+  }, [availableVariants]);
+
+  const galleryImages = useMemo(() => {
+    if (selectedVariantImages.length) {
+      return Array.from(new Set([...selectedVariantImages, ...productImages]));
+    }
+    if (product?.listingType === "group" && allVariantImages.length) {
+      return Array.from(new Set([...productImages, ...allVariantImages]));
+    }
+    return productImages;
+  }, [allVariantImages, product?.listingType, productImages, selectedVariantImages]);
+
+  useEffect(() => {
+    if (!galleryImages.length) {
+      setSelectedImage("");
+      return;
+    }
+
+    setSelectedImage((current) => {
+      if (current && galleryImages.includes(current)) {
+        return current;
+      }
+      return galleryImages[0];
+    });
+  }, [galleryImages]);
+
+  useEffect(() => {
+    if (selectedVariantImages.length) {
+      setSelectedImage(selectedVariantImages[0]);
+    }
+  }, [selectedVariantImages]);
+
+  const productDiscountPercent = useMemo(() => getProductDiscountPercent(product), [product]);
+  const selectedVariantDiscountPercent = useMemo(
+    () => getProductDiscountPercent(selectedVariant),
+    [selectedVariant]
+  );
+  const intrinsicDiscountPercent = selectedVariantDiscountPercent || productDiscountPercent;
+  const originalPrice = Number(
+    resolveOriginalPrice(selectedVariant || product)
+    || selectedVariant?.price
+    || product.price
+    || 0
+  );
+  const effectivePrice = Number(selectedVariant?.price || product.price || 0);
 
   // Calculate pricing based on quantity
   const pricing = useMemo(() => {
     if (!product) return null;
-    return calculatePrice(product.price, quantity);
-  }, [product, quantity]);
-
-  const discountInfo = useMemo(() => {
-    return getDiscountInfo(quantity);
-  }, [quantity]);
+    const hasIntrinsicDiscount = Number(selectedVariantDiscountPercent || productDiscountPercent) > 0;
+    return calculatePrice(effectivePrice, quantity, {
+      disableBulkDiscount: hasIntrinsicDiscount,
+    });
+  }, [product, quantity, selectedVariantDiscountPercent, productDiscountPercent, effectivePrice]);
 
   if (!product && productsLoading) {
     return (
@@ -48,11 +161,46 @@ const ProductDetail = () => {
   }
 
   const handleAddToCart = () => {
+    if (product.listingType === "group" && availableVariants.length > 0 && !selectedVariant) {
+      toast.error("Please select a variant before adding to cart");
+      return;
+    }
+
+    const cartProduct = {
+      ...product,
+      listingId: product.listingId || product.parentGroupId || product.id,
+      variantId: selectedVariant?.variantId || selectedVariant?.id || product.variantId || null,
+      variantName: selectedVariant?.name || product.variantName || null,
+      parentGroupId: product.parentGroupId || product.groupId || null,
+      groupName: product.groupName || null,
+      price: Number(selectedVariant?.price || product.price || 0),
+      originalPrice: Number(selectedVariant?.originalPrice || product.originalPrice || selectedVariant?.price || product.price || 0),
+      discountPercent: Number(selectedVariantDiscountPercent || productDiscountPercent || 0),
+      selectedImage:
+        selectedImage
+        || selectedVariant?.image
+        || selectedVariant?.imageUrl
+        || product.selectedImage
+        || product.primaryImage
+        || product.image,
+    };
+
     // Only emit to socket - let socket response update Redux
-    addToCartSocket(product, quantity);
-    toast.success(
-      `${quantity} ${quantity > 1 ? "items" : "item"} added to cart!`
-    );
+    const sent = addToCartSocket(cartProduct, quantity, (result) => {
+      if (result?.ok) {
+        toast.success(
+          `${quantity} ${quantity > 1 ? "items" : "item"} added to cart!`
+        );
+        return;
+      }
+
+      toast.error(result?.message || "Unable to add item to cart. Please try again.");
+    });
+    if (sent) {
+      return;
+    }
+
+    toast.error("Unable to add item to cart. Please try again.");
   };
 
   const handleCustomize = () => {
@@ -72,12 +220,30 @@ const ProductDetail = () => {
 
       <div className="product-detail-content">
         <div className="product-image-section">
-          {product.image ? (
-            <ImageZoom
-              src={getProductImageUrl(product.image)}
-              alt={product.name}
-              zoomLevel={3.5}
-            />
+          {selectedImage ? (
+            <>
+              <ImageZoom
+                src={getProductImageUrl(selectedImage)}
+                alt={detailTitle}
+                zoomLevel={3.5}
+              />
+              {galleryImages.length > 0 && (
+                <div className="product-thumbnail-rail" role="tablist" aria-label="Product images">
+                  {galleryImages.map((imageUrl, index) => (
+                    <button
+                      key={`${imageUrl}-${index}`}
+                      type="button"
+                      className={`product-thumbnail ${selectedImage === imageUrl ? "active" : ""}`}
+                      onClick={() => setSelectedImage(imageUrl)}
+                      aria-label={`View product image ${index + 1}`}
+                      aria-pressed={selectedImage === imageUrl}
+                    >
+                      <img src={getProductImageUrl(imageUrl)} alt={`${detailTitle} ${index + 1}`} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
           ) : (
             <div className="product-image-placeholder">
               <span>{product.category}</span>
@@ -86,15 +252,27 @@ const ProductDetail = () => {
         </div>
 
         <div className="product-info-section">
-          <h1>{product.name}</h1>
+          <h1>{detailTitle}</h1>
           <p className="product-category">{product.category}</p>
 
           <div className="pricing-section">
             <p className="product-price">
-              {pricing.discountPercent > 0 ? (
+              {intrinsicDiscountPercent > 0 ? (
                 <>
                   <span className="original-price">
-                    ₦{product.price.toLocaleString()}
+                    ₦{originalPrice.toLocaleString()}
+                  </span>
+                  <span className="discounted-price">
+                    ₦{effectivePrice.toLocaleString()}
+                  </span>
+                  <span className="discount-badge">
+                    {intrinsicDiscountPercent}% OFF
+                  </span>
+                </>
+              ) : pricing.discountPercent > 0 ? (
+                <>
+                  <span className="original-price">
+                    ₦{effectivePrice.toLocaleString()}
                   </span>
                   <span className="discounted-price">
                     ₦{Math.round(pricing.unitPrice).toLocaleString()}
@@ -104,7 +282,7 @@ const ProductDetail = () => {
                   </span>
                 </>
               ) : (
-                <span>₦{product.price.toLocaleString()}</span>
+                <span>₦{effectivePrice.toLocaleString()}</span>
               )}
             </p>
             {quantity > 1 && (
@@ -122,43 +300,34 @@ const ProductDetail = () => {
             <p>{product.description}</p>
           </div>
 
+          {product.listingType === "group" && availableVariants.length > 0 && (
+            <div className="quantity-selector">
+              <label htmlFor="variant-select">Variant:</label>
+              <select
+                id="variant-select"
+                value={selectedVariantId}
+                onChange={(e) => setSelectedVariantId(e.target.value)}
+              >
+                <option value="">Select a variant</option>
+                {availableVariants.map((variant) => {
+                  const variantId = String(variant?.variantId || variant?.id || "");
+                  return (
+                    <option key={variantId || variant?.name} value={variantId}>
+                      {variant?.name || variantId}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
           <div className="product-details">
             <h3>Details</h3>
             <ul>
               <li>
-                <strong>Material:</strong> {product.material || "Premium Metal"}
-              </li>
-              <li>
-                <strong>Weight:</strong> {product.weight || "N/A"}
-              </li>
-              <li>
                 <strong>SKU:</strong> {product.sku || `JWL-${product.id}`}
               </li>
             </ul>
-          </div>
-
-          <div className="discount-tiers">
-            <h4>Bulk Discounts Available:</h4>
-            <ul>
-              {discountInfo.allTiers.map((tier, index) => (
-                <li
-                  key={index}
-                  className={
-                    discountInfo.currentTier?.min === tier.min
-                      ? "active-tier"
-                      : ""
-                  }
-                >
-                  {tier.label}
-                </li>
-              ))}
-            </ul>
-            {discountInfo.nextTier && (
-              <p className="next-discount-hint">
-                Add {discountInfo.nextTier.min - quantity} more to get{" "}
-                {discountInfo.nextTier.discount}% off!
-              </p>
-            )}
           </div>
 
           <div className="quantity-selector">

@@ -1,9 +1,8 @@
-import React, { useMemo, useEffect } from "react";
+import React, { useEffect } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import useCartSocket from "../hooks/useCartSocket";
-import { getDiscountInfo } from "../utils/pricing";
 import { getProductImageUrl } from "../utils/image";
 import { markExpired } from "../redux/slices/cartSlice";
 import CartCountdown from "../components/CartCountdown";
@@ -21,7 +20,8 @@ const Cart = () => {
     reservationStatus,
     isExpired,
   } = useSelector((state) => state.cart);
-  const { addToCartSocket, removeFromCartSocket, updateQuantitySocket } = useCartSocket();
+  const products = useSelector((state) => state.products.items || []);
+  const { addToCartSocket, removeFromCartSocket, updateQuantitySocket, updateVariantSocket } = useCartSocket();
 
   useEffect(() => {
     const socket = getSocket();
@@ -49,13 +49,13 @@ const Cart = () => {
     dispatch(markExpired());
   };
 
-  const handleRemove = (id) => {
+  const handleRemove = (item) => {
     toast.warning("Remove this item from cart?", {
       action: {
         label: "Remove",
         onClick: () => {
           // Only emit WebSocket event - let socket response update Redux
-          removeFromCartSocket(id);
+          removeFromCartSocket(item.lineKey || item.id, item.productId, item.variantId || null);
           toast.success("Item removed from cart!");
         },
       },
@@ -66,15 +66,44 @@ const Cart = () => {
     });
   };
 
-  const handleQuantityChange = (id, newQuantity) => {
+  const handleQuantityChange = (item, newQuantity) => {
     if (isExpired) {
       toast.error("Your reservation expired. Re-add items to continue.");
       return;
     }
     if (newQuantity > 0) {
       // Only emit WebSocket event - let socket response update Redux
-      updateQuantitySocket(id, newQuantity);
+      updateQuantitySocket(item.lineKey || item.id, newQuantity, item.productId, item.variantId || null);
     }
+  };
+
+  const resolveVariantOptions = (item) => {
+    const listingId = String(item.listingId || item.productId || "");
+    const groupedProduct = products.find((product) => String(product.id) === listingId);
+    return Array.isArray(groupedProduct?.variants) ? groupedProduct.variants : [];
+  };
+
+  const handleVariantChange = (item, nextVariantId) => {
+    if (!nextVariantId) return;
+    const options = resolveVariantOptions(item);
+    const nextVariant = options.find(
+      (variant) => String(variant?.variantId || variant?.id) === String(nextVariantId)
+    );
+
+    if (!nextVariant) {
+      toast.error("Selected variant is unavailable");
+      return;
+    }
+
+    updateVariantSocket({
+      lineKey: item.lineKey || item.id,
+      productId: item.productId,
+      currentVariantId: item.variantId || null,
+      nextVariantId: String(nextVariant?.variantId || nextVariant?.id || ""),
+      nextVariantName: nextVariant?.name || null,
+      nextPrice: Number(nextVariant?.price || item.price || 0),
+      nextImage: nextVariant?.image || nextVariant?.imageUrl || item.selectedImage || item.image || "",
+    });
   };
 
   const handleCheckout = () => {
@@ -89,10 +118,18 @@ const Cart = () => {
     items.forEach((item) => {
       addToCartSocket(
         {
-          id: item.id,
+          id: item.productId,
+          listingId: item.listingId || item.parentGroupId || item.productId,
           name: item.name,
           price: item.price,
           image: item.image,
+          selectedImage: item.selectedImage || item.image,
+          variantId: item.variantId || null,
+          variantName: item.variantName || null,
+          parentGroupId: item.parentGroupId || null,
+          groupName: item.groupName || null,
+          originalPrice: item.originalPrice || item.basePrice || item.price,
+          discountPercent: item.intrinsicDiscountPercent || 0,
         },
         item.quantity
       );
@@ -129,15 +166,16 @@ const Cart = () => {
       <div className="cart-content">
         <div className="cart-items">
           {items.map((item) => (
+            
             <div
               key={item.id}
               className={`cart-item${isExpired ? " is-expired" : ""}`}
               aria-disabled={isExpired}
             >
               <div className="item-image">
-                {item.image ? (
+                {item.selectedImage || item.image ? (
                   <img
-                    src={getProductImageUrl(item.image)}
+                    src={getProductImageUrl(item.selectedImage || item.image)}
                     alt={item.name}
                   />
                 ) : (
@@ -148,6 +186,28 @@ const Cart = () => {
               <div className="item-details">
                 <h3>{item.name}</h3>
                 <p className="item-category">{item.category}</p>
+                {item.groupName && (
+                  <p className="item-category">Group: {item.groupName}</p>
+                )}
+                {item.variantName && (
+                  <p className="item-category">Variant: {item.variantName}</p>
+                )}
+                {item.groupName && resolveVariantOptions(item).length > 0 && (
+                  <select
+                    value={item.variantId || ""}
+                    disabled={isExpired}
+                    onChange={(event) => handleVariantChange(item, event.target.value)}
+                  >
+                    {resolveVariantOptions(item).map((variant) => {
+                      const value = String(variant?.variantId || variant?.id || "");
+                      return (
+                        <option key={value} value={value}>
+                          {variant?.name || value}
+                        </option>
+                      );
+                    })}
+                  </select>
+                )}
                 {item.isCustom && (
                   <span className="custom-badge">Customized</span>
                 )}
@@ -157,7 +217,7 @@ const Cart = () => {
                 <button
                   disabled={isExpired}
                   onClick={() =>
-                    handleQuantityChange(item.id, item.quantity - 1)
+                    handleQuantityChange(item, item.quantity - 1)
                   }
                 >
                   -
@@ -166,7 +226,7 @@ const Cart = () => {
                 <button
                   disabled={isExpired}
                   onClick={() =>
-                    handleQuantityChange(item.id, item.quantity + 1)
+                    handleQuantityChange(item, item.quantity + 1)
                   }
                 >
                   +
@@ -174,18 +234,26 @@ const Cart = () => {
               </div>
 
               <div className="item-price">
-                {item.discountPercent > 0 ? (
+                {(item.intrinsicDiscountPercent > 0 || item.discountPercent > 0) ? (
                   <>
                     <p className="base-price">
                       <span className="strikethrough">
-                        ₦{Math.round(item.basePrice).toLocaleString()}
+                        ₦{Math.round(
+                          item.intrinsicDiscountPercent > 0
+                            ? (item.originalPrice || item.basePrice)
+                            : item.basePrice
+                        ).toLocaleString()}
                       </span>
                       <span className="discount-badge-small">
-                        {item.discountPercent}% off
+                        {(item.intrinsicDiscountPercent || item.discountPercent)}% off
                       </span>
                     </p>
                     <p className="unit-price">
-                      ₦{Math.round(item.unitPrice).toLocaleString()} each
+                      ₦{Math.round(
+                        item.intrinsicDiscountPercent > 0
+                          ? item.basePrice
+                          : item.unitPrice
+                      ).toLocaleString()} each
                     </p>
                   </>
                 ) : (
@@ -203,7 +271,7 @@ const Cart = () => {
               <button
                 className="remove-btn"
                 disabled={isExpired}
-                onClick={() => handleRemove(item.id)}
+                onClick={() => handleRemove(item)}
               >
                 ×
               </button>

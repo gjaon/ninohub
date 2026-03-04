@@ -1,5 +1,5 @@
 import { createSlice } from "@reduxjs/toolkit";
-import { calculatePrice } from "../../utils/pricing";
+import { calculatePrice, getProductDiscountPercent } from "../../utils/pricing";
 
 const initialState = {
   items: [],
@@ -18,6 +18,8 @@ const cartSlice = createSlice({
   initialState,
   reducers: {
     addToCart: (state, action) => {
+      const intrinsicDiscountPercent = getProductDiscountPercent(action.payload);
+      const disableBulkDiscount = intrinsicDiscountPercent > 0;
       const existingItem = state.items.find(
         (item) => item.id === action.payload.id
       );
@@ -26,18 +28,25 @@ const cartSlice = createSlice({
         existingItem.quantity += action.payload.quantity || 1;
         const pricing = calculatePrice(
           existingItem.basePrice,
-          existingItem.quantity
+          existingItem.quantity,
+          {
+            disableBulkDiscount: Number(existingItem.intrinsicDiscountPercent || 0) > 0,
+          }
         );
         existingItem.unitPrice = pricing.unitPrice;
         existingItem.totalPrice = pricing.totalPrice;
         existingItem.discountPercent = pricing.discountPercent;
       } else {
         const qty = action.payload.quantity || 1;
-        const pricing = calculatePrice(action.payload.price, qty);
+        const pricing = calculatePrice(action.payload.price, qty, {
+          disableBulkDiscount,
+        });
         state.items.push({
           ...action.payload,
           quantity: qty,
           basePrice: action.payload.price,
+          originalPrice: Number(action.payload.originalPrice || action.payload.price || 0),
+          intrinsicDiscountPercent,
           unitPrice: pricing.unitPrice,
           totalPrice: pricing.totalPrice,
           discountPercent: pricing.discountPercent,
@@ -70,7 +79,9 @@ const cartSlice = createSlice({
 
       if (item) {
         item.quantity = quantity;
-        const pricing = calculatePrice(item.basePrice, quantity);
+        const pricing = calculatePrice(item.basePrice, quantity, {
+          disableBulkDiscount: Number(item.intrinsicDiscountPercent || 0) > 0,
+        });
         item.unitPrice = pricing.unitPrice;
         item.totalPrice = pricing.totalPrice;
         item.discountPercent = pricing.discountPercent;
@@ -107,14 +118,32 @@ const cartSlice = createSlice({
       
       // Transform backend cart items to frontend format with pricing calculations
       state.items = (backendCart.items || []).map(item => {
-        const pricing = calculatePrice(item.price, item.quantity);
+        const intrinsicDiscountPercent = getProductDiscountPercent({
+          price: item.price,
+          originalPrice: item.originalPrice,
+          discountPercent: item.intrinsicDiscountPercent,
+        });
+        const pricing = calculatePrice(item.price, item.quantity, {
+          disableBulkDiscount: intrinsicDiscountPercent > 0,
+        });
+        const lineKey = item.lineKey || `${item.productId || ""}::${item.variantId || ""}`;
         return {
-          id: item.productId,
+          id: lineKey,
+          lineKey,
+          productId: item.productId,
+          listingId: item.listingId || item.parentGroupId || item.productId || null,
           name: item.productName,
           price: item.price,
           quantity: item.quantity,
           image: item.image,
+          selectedImage: item.selectedImage || item.image,
+          variantId: item.variantId || null,
+          variantName: item.variantName || null,
+          parentGroupId: item.parentGroupId || null,
+          groupName: item.groupName || null,
           basePrice: item.price,
+          originalPrice: Number(item.originalPrice || item.price || 0),
+          intrinsicDiscountPercent,
           unitPrice: pricing.unitPrice,
           totalPrice: pricing.totalPrice,
           discountPercent: pricing.discountPercent,
@@ -145,14 +174,32 @@ const cartSlice = createSlice({
       
       // Transform backend cart items to frontend format with pricing calculations
       state.items = (backendCart.items || []).map(item => {
-        const pricing = calculatePrice(item.price, item.quantity);
+        const intrinsicDiscountPercent = getProductDiscountPercent({
+          price: item.price,
+          originalPrice: item.originalPrice,
+          discountPercent: item.intrinsicDiscountPercent,
+        });
+        const pricing = calculatePrice(item.price, item.quantity, {
+          disableBulkDiscount: intrinsicDiscountPercent > 0,
+        });
+        const lineKey = item.lineKey || `${item.productId || ""}::${item.variantId || ""}`;
         return {
-          id: item.productId,
+          id: lineKey,
+          lineKey,
+          productId: item.productId,
+          listingId: item.listingId || item.parentGroupId || item.productId || null,
           name: item.productName,
           price: item.price,
           quantity: item.quantity,
           image: item.image,
+          selectedImage: item.selectedImage || item.image,
+          variantId: item.variantId || null,
+          variantName: item.variantName || null,
+          parentGroupId: item.parentGroupId || null,
+          groupName: item.groupName || null,
           basePrice: item.price,
+          originalPrice: Number(item.originalPrice || item.price || 0),
+          intrinsicDiscountPercent,
           unitPrice: pricing.unitPrice,
           totalPrice: pricing.totalPrice,
           discountPercent: pricing.discountPercent,

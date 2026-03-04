@@ -12,6 +12,7 @@ import { updateCartFromSocket } from "./redux/slices/cartSlice";
 import { getUser } from "./services/auth";
 import { fetchProducts } from "./services/products";
 import { initializeSocket } from "./services/socket";
+import { syncMarketplaceEvents } from "./services/marketplace";
 import { LaunchProvider } from "./context/LaunchContext";
 import Layout from "./components/Layout";
 import Home from "./pages/Home";
@@ -45,6 +46,9 @@ function App() {
   const dispatch = useDispatch();
   const { currentUser } = useSelector((state) => state.user);
   const products = useSelector((state) => state.products.items);
+  const hasSocketSyncedProductsRef = React.useRef(false);
+  const lastSocketSyncAtRef = React.useRef(0);
+  const pendingProductsResyncRef = React.useRef(null);
 
   useEffect(() => {
     let didCancel = false;
@@ -55,6 +59,9 @@ function App() {
       try {
         const response = await fetchProducts();
         if (!didCancel) {
+          if (hasSocketSyncedProductsRef.current) {
+            return;
+          }
           dispatch(setProducts(response));
         }
       } catch (error) {
@@ -84,10 +91,6 @@ function App() {
   useEffect(() => {
     const restoreUserSession = async () => {
       try {
-        const token = localStorage.getItem("accessToken");
-        if (!token) {
-          return;
-        }
         const response = await getUser();
         if (response) {
           dispatch(setUser(response));
@@ -105,9 +108,64 @@ function App() {
   useEffect(() => {
     const socket = initializeSocket(currentUser?.token);
 
+    const scheduleProductsSync = () => {
+      if (pendingProductsResyncRef.current) {
+        clearTimeout(pendingProductsResyncRef.current);
+      }
+      pendingProductsResyncRef.current = setTimeout(() => {
+        socket.emit("products:sync");
+      }, 250);
+    };
+
+    const shouldResyncProductsForEvent = (eventType) => {
+      const normalizedType = String(eventType || "").toLowerCase();
+      if (!normalizedType) return false;
+
+      return (
+        normalizedType === "marketplace.inventory.synced" ||
+        normalizedType.startsWith("marketplace.order.") ||
+        normalizedType.startsWith("marketplace.listing.") ||
+        normalizedType.startsWith("marketplace.product.")
+      );
+    };
+
+    const syncMissedEvents = async () => {
+      try {
+        const since = localStorage.getItem("marketplace:lastEventAt");
+        const response = await syncMarketplaceEvents(since || undefined);
+        const events = response?.data || [];
+        if (events.length) {
+          localStorage.setItem(
+            "marketplace:lastEventAt",
+            new Date(events[events.length - 1].occurredAt).toISOString()
+          );
+        }
+      } catch (_error) {
+      }
+    };
+
     // Listen for cart updates from backend
     socket.on("cart:updated", (cart) => {
       dispatch(updateCartFromSocket(cart));
+    });
+
+    socket.on("business:event", (eventEnvelope) => {
+      if (eventEnvelope?.occurredAt) {
+        localStorage.setItem(
+          "marketplace:lastEventAt",
+          new Date(eventEnvelope.occurredAt).toISOString()
+        );
+      }
+
+      if (shouldResyncProductsForEvent(eventEnvelope?.eventType)) {
+        scheduleProductsSync();
+      }
+    });
+
+    socket.on("connect", () => {
+      if (currentUser?.token) {
+        syncMissedEvents();
+      }
     });
 
     // Listen for cart sync response
@@ -120,11 +178,31 @@ function App() {
     });
 
     socket.on("products:synced", (productsPayload) => {
+      const latestPayloadSyncMs = Array.isArray(productsPayload)
+        ? Math.max(
+            0,
+            ...productsPayload.map((item) => new Date(item?.syncedAt || item?.updatedAt || 0).getTime() || 0)
+          )
+        : 0;
+
+      if (latestPayloadSyncMs && latestPayloadSyncMs < lastSocketSyncAtRef.current) {
+        return;
+      }
+
+      hasSocketSyncedProductsRef.current = true;
+      lastSocketSyncAtRef.current = latestPayloadSyncMs || Date.now();
       dispatch(setProducts(productsPayload));
+      dispatch(setLoading(false));
     });
 
     socket.on("products:error", (error) => {
       console.error("Products error:", error.message);
+      dispatch(setError(error.message || "Failed to sync products"));
+      dispatch(setLoading(false));
+    });
+
+    socket.on("inventory:updated", () => {
+      scheduleProductsSync();
     });
 
     // Sync cart and products when component mounts
@@ -138,6 +216,13 @@ function App() {
       socket.off("cart:error");
       socket.off("products:synced");
       socket.off("products:error");
+      socket.off("business:event");
+      socket.off("connect");
+      socket.off("inventory:updated");
+      if (pendingProductsResyncRef.current) {
+        clearTimeout(pendingProductsResyncRef.current);
+        pendingProductsResyncRef.current = null;
+      }
     };
   }, [dispatch, currentUser?.token]);
 

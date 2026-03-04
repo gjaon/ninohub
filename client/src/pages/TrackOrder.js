@@ -3,6 +3,12 @@ import { useSelector } from "react-redux";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { fetchUserOrders, trackOrder } from "../services/orders";
+import {
+  fetchMarketplaceOrders,
+  trackMarketplaceOrder,
+  syncMarketplaceEvents,
+} from "../services/marketplace";
+import { getSocket } from "../services/socket";
 import "./TrackOrder.css";
 
 const TrackOrder = () => {
@@ -17,10 +23,24 @@ const TrackOrder = () => {
   const [loading, setLoading] = useState(false);
   const [userOrders, setUserOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const trackingOrderNumberRef = React.useRef(null);
   const [viewMode, setViewMode] = useState(
     isAuthenticated ? "my-orders" : "track"
   );
-  const buildTimeline = (order) => {
+
+  const normalizeOrderStatus = React.useCallback((status) => {
+    const normalized = String(status || "").toLowerCase();
+    const map = {
+      pending: "placed",
+      paid: "payment_confirmed",
+      cancelled: "rejected",
+      failed: "rejected",
+    };
+
+    return map[normalized] || normalized;
+  }, []);
+
+  const buildTimeline = React.useCallback((order) => {
     const createdDate = new Date(order.createdAt);
     const baseDate = createdDate.toLocaleDateString();
     const baseTime = createdDate.toLocaleTimeString([], {
@@ -29,17 +49,20 @@ const TrackOrder = () => {
     });
 
     const steps = [
-      "pending",
-      "paid",
+      "placed",
+      "payment_confirmed",
+      "accepted",
       "processing",
       "shipped",
       "delivered",
     ];
-    const statusIndex = steps.indexOf(order.status);
+    const statusIndex = steps.indexOf(normalizeOrderStatus(order.status));
     const timeline = steps.map((status, index) => ({
       status:
-        status === "paid"
+        status === "payment_confirmed"
           ? "Payment Confirmed"
+          : status === "accepted"
+            ? "Accepted"
           : status.charAt(0).toUpperCase() + status.slice(1),
       date: baseDate,
       time: baseTime,
@@ -48,9 +71,9 @@ const TrackOrder = () => {
     }));
 
     return timeline;
-  };
+  }, [normalizeOrderStatus]);
 
-  const enrichOrder = (order) => {
+  const enrichOrder = React.useCallback((order) => {
     const estimatedDelivery = new Date(
       new Date(order.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000
     ).toLocaleDateString();
@@ -60,26 +83,101 @@ const TrackOrder = () => {
       estimatedDelivery,
       timeline: buildTimeline(order),
     };
-  };
+  }, [buildTimeline]);
 
-  React.useEffect(() => {
-    const loadOrders = async () => {
+  const mapOrdersResponse = React.useCallback(
+    (response) => {
+      const orders = Array.isArray(response)
+        ? response
+        : Array.isArray(response?.data)
+          ? response.data
+          : [];
+
+      return orders.map(enrichOrder);
+    },
+    [enrichOrder]
+  );
+
+  const loadOrdersWithFallback = React.useCallback(async () => {
+    try {
+      const marketplaceResponse = await fetchMarketplaceOrders();
+      return mapOrdersResponse(marketplaceResponse);
+    } catch (_marketplaceError) {
+      const fallbackResponse = await fetchUserOrders();
+      return mapOrdersResponse(fallbackResponse);
+    }
+  }, [mapOrdersResponse]);
+
+  const refreshOrders = React.useCallback(
+    async ({ silent = false } = {}) => {
       setOrdersLoading(true);
       try {
-        const response = await fetchUserOrders();
-        const enriched = (response || []).map(enrichOrder);
+        const enriched = await loadOrdersWithFallback();
         setUserOrders(enriched);
+
+        if (trackingOrderNumberRef.current) {
+          const refreshedCurrent = enriched.find(
+            (order) => order.orderNumber === trackingOrderNumberRef.current
+          );
+          if (refreshedCurrent) {
+            setTrackingResult(refreshedCurrent);
+          }
+        }
+
+        if (!silent) {
+          toast.success("Orders refreshed");
+        }
       } catch (error) {
         toast.error(error.message || "Failed to load orders");
       } finally {
         setOrdersLoading(false);
       }
-    };
+    },
+    [loadOrdersWithFallback]
+  );
 
+  React.useEffect(() => {
+    trackingOrderNumberRef.current = trackingResult?.orderNumber || null;
+  }, [trackingResult]);
+
+  React.useEffect(() => {
     if (isAuthenticated) {
-      loadOrders();
+      refreshOrders({ silent: true });
+
+      const socket = getSocket();
+      const onBusinessEvent = async (eventEnvelope) => {
+        const eventType = String(eventEnvelope?.eventType || "").toLowerCase();
+        const isOrderRealtimeEvent =
+          eventType.startsWith("marketplace.order.") ||
+          eventType === "marketplace.provider.event";
+
+        if (!isOrderRealtimeEvent) {
+          return;
+        }
+
+        await refreshOrders({ silent: true });
+      };
+
+      socket?.on("business:event", onBusinessEvent);
+
+      syncMarketplaceEvents(localStorage.getItem("marketplace:lastEventAt") || undefined)
+        .then(async (eventSync) => {
+          const events = eventSync?.data || [];
+          if (events.length) {
+            localStorage.setItem(
+              "marketplace:lastEventAt",
+              new Date(events[events.length - 1].occurredAt).toISOString()
+            );
+            await refreshOrders({ silent: true });
+          }
+        })
+        .catch(() => null);
+
+      return () => {
+        socket?.off("business:event", onBusinessEvent);
+      };
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, refreshOrders]);
 
   React.useEffect(() => {
     if (orderFromUrl && isAuthenticated) {
@@ -102,7 +200,13 @@ const TrackOrder = () => {
     setLoading(true);
 
     try {
-      const response = await trackOrder(orderNumber, email);
+      let response;
+      try {
+        response = await trackMarketplaceOrder(orderNumber);
+      } catch (_marketplaceError) {
+        response = await trackOrder(orderNumber, email);
+      }
+
       setTrackingResult(enrichOrder(response));
       toast.success("Order found!");
     } catch (error) {
@@ -122,6 +226,13 @@ const TrackOrder = () => {
   const handleViewOrder = (order) => {
     setTrackingResult(order);
     setViewMode("track");
+  };
+
+  const handleRefreshOrders = async () => {
+    if (!isAuthenticated) {
+      return;
+    }
+    await refreshOrders();
   };
 
   return (
@@ -175,7 +286,12 @@ const TrackOrder = () => {
 
         {isAuthenticated && viewMode === "my-orders" && !trackingResult ? (
           <div className="user-orders-list">
-            <h2>Your Orders</h2>
+            <div className="orders-list-header">
+              <h2>Your Orders</h2>
+              <button className="btn-new-search" onClick={handleRefreshOrders}>
+                Refresh Orders
+              </button>
+            </div>
             {ordersLoading ? (
               <p>Loading orders...</p>
             ) : userOrders.length > 0 ? (
@@ -293,9 +409,16 @@ const TrackOrder = () => {
                   {trackingResult.status}
                 </div>
               </div>
-              <button className="btn-new-search" onClick={handleReset}>
-                Track Another Order
-              </button>
+              <div className="results-actions">
+                {isAuthenticated && (
+                  <button className="btn-new-search" onClick={handleRefreshOrders}>
+                    Refresh Orders
+                  </button>
+                )}
+                <button className="btn-new-search" onClick={handleReset}>
+                  Track Another Order
+                </button>
+              </div>
             </div>
 
             <div className="delivery-estimate">

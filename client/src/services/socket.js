@@ -19,6 +19,7 @@ const initializeSocket = (token) => {
       token: token || null,
       sessionId,
     },
+    withCredentials: true,
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,

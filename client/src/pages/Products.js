@@ -69,8 +69,13 @@ const Products = () => {
   return (
     <div className="products-page">
       <div className="products-header">
-        <h1>Shop With Nino | House of Jewelry</h1>
+        <h1>House of Jewelry</h1>
         <p>Wholesale and Retail - Premium Quality Jewelry</p>
+        {/* <div className="products-highlight-strip">
+          <span>Bulk Discounts: 3+ items (5% off)</span>
+          <span>5+ items (10% off)</span>
+          <span>10+ items (15% off)</span>
+        </div> */}
       </div>
 
       <div className="search-bar-container">
@@ -119,16 +124,16 @@ const Products = () => {
         </div>
       </div>
 
-      <div className="results-info">
+      {/* <div className="results-info">
         <span>
           Showing {filteredItems.length > 0 ? startIndex + 1 : 0}-
           {Math.min(endIndex, filteredItems.length)} of {filteredItems.length}{" "}
           {filteredItems.length === 1 ? "product" : "products"}
         </span>
-      </div>
+      </div> */}
 
       <div className="products-grid">
-        {loading ? (
+        {loading && currentProducts.length === 0 ? (
           <div className="loading-state">
             <p>Loading products...</p>
           </div>

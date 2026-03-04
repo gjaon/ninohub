@@ -15,7 +15,7 @@
 
 .main-content {
   flex: 1;
-  background-color: #f8f9fa;
+  background-color: var(--color-bg);
   width: 100%;
   overflow-x: hidden;
 }

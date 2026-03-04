@@ -84,8 +84,8 @@ const LaunchCountdown = () => {
     setCurrentImageIndex(index);
   };
 
-  // Hide countdown on waitlist page
-  if (pathname === "/waitlist") {
+  // Hide countdown on waitlist, login, and register pages
+  if (pathname === "/waitlist" || pathname === "/login" || pathname === "/register") {
     return null;
   }
 

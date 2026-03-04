@@ -1,16 +1,53 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Link } from "react-router-dom";
+import { useSelector } from "react-redux";
 import { getProductImageUrl } from "../utils/image";
 import "./Home.css";
 
 const Home = () => {
-  // Category images - random selections from each category
-  const categoryImages = {
-    Rings: getProductImageUrl("rings-15.jpg"),
-    Necklaces: getProductImageUrl("necklaces-20.jpg"),
-    Bracelets: getProductImageUrl("bracelets-10.jpg"),
-    Earrings: getProductImageUrl("earrings-02.jpg"),
-  };
+  const products = useSelector((state) => state.products.items || []);
+
+  const topCategories = useMemo(() => {
+    const categoryMap = new Map();
+
+    products.forEach((product) => {
+      const category = String(product?.category || "").trim();
+      if (!category) return;
+
+      const current = categoryMap.get(category) || {
+        name: category,
+        count: 0,
+        image:
+          product.primaryImage
+          || product.selectedImage
+          || (Array.isArray(product.images) ? product.images[0] : "")
+          || product.image
+          || "",
+      };
+
+      current.count += 1;
+
+      if (!current.image) {
+        current.image =
+          product.primaryImage
+          || product.selectedImage
+          || (Array.isArray(product.images) ? product.images[0] : "")
+          || product.image
+          || "";
+      }
+
+      categoryMap.set(category, current);
+    });
+
+    return Array.from(categoryMap.values())
+      .sort((first, second) => {
+        if (second.count !== first.count) {
+          return second.count - first.count;
+        }
+        return first.name.localeCompare(second.name);
+      })
+      .slice(0, 4);
+  }, [products]);
 
   return (
     <div className="home">
@@ -44,7 +81,8 @@ const Home = () => {
         <div className="feature-card">
           <h3>Custom Design</h3>
           <p>Create unique, personalized jewelry with text, images, and more</p>
-          <Link to="/customization">Start Customizing</Link>
+          {/* <Link to="/customization">Start Customizing</Link> */}
+          <span className="coming-soon">Coming Soon</span>
         </div>
         <div className="feature-card">
           <h3>Quality Guaranteed</h3>
@@ -55,30 +93,22 @@ const Home = () => {
       <section className="categories">
         <h2>Shop by Category</h2>
         <div className="category-grid">
-          <Link to="/products?category=Rings" className="category-item">
-            <div className="category-image">
-              <img src={categoryImages.Rings} alt="Rings" />
-            </div>
-            <h4>Rings</h4>
-          </Link>
-          <Link to="/products?category=Necklaces" className="category-item">
-            <div className="category-image">
-              <img src={categoryImages.Necklaces} alt="Necklaces" />
-            </div>
-            <h4>Necklaces</h4>
-          </Link>
-          <Link to="/products?category=Bracelets" className="category-item">
-            <div className="category-image">
-              <img src={categoryImages.Bracelets} alt="Bracelets" />
-            </div>
-            <h4>Bracelets</h4>
-          </Link>
-          <Link to="/products?category=Earrings" className="category-item">
-            <div className="category-image">
-              <img src={categoryImages.Earrings} alt="Earrings" />
-            </div>
-            <h4>Earrings</h4>
-          </Link>
+          {topCategories.map((category) => (
+            <Link
+              key={category.name}
+              to={`/products?category=${encodeURIComponent(category.name)}`}
+              className="category-item"
+            >
+              <div className="category-image">
+                {category.image ? (
+                  <img src={getProductImageUrl(category.image)} alt={category.name} />
+                ) : (
+                  <span>{category.name}</span>
+                )}
+              </div>
+              <h4>{category.name}</h4>
+            </Link>
+          ))}
         </div>
       </section>
     </div>

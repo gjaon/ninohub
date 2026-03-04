@@ -1,9 +1,14 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { clearCart } from "../redux/slices/cartSlice";
-import { createOrder } from "../services/orders";
+import { setUser } from "../redux/slices/userSlice";
+import { getUser } from "../services/auth";
+import {
+  initializeMarketplaceCheckout,
+  verifyMarketplaceCheckout,
+} from "../services/marketplace";
 import { getSocket } from "../services/socket";
 import CartCountdown from "../components/CartCountdown";
 import "./Checkout.css";
@@ -20,26 +25,80 @@ const Checkout = () => {
   } = useSelector((state) => state.cart);
   const { currentUser, isAuthenticated } = useSelector((state) => state.user);
   const [step, setStep] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [authResolved, setAuthResolved] = useState(false);
+  const [checkoutError, setCheckoutError] = useState("");
+  const [fulfillmentMethod, setFulfillmentMethod] = useState("delivery");
   const [formData, setFormData] = useState({
-    // Shipping Info
-    firstName: "",
-    lastName: "",
+    fullName: "",
     email: "",
     phone: "",
     address: "",
-    city: "",
     state: "",
-    zipCode: "",
     country: "",
-    // Payment Info
-    cardNumber: "",
-    cardName: "",
-    expiryDate: "",
-    cvv: "",
   });
 
-  // Start checkout timer when component mounts
+  const searchParams = useMemo(
+    () => new URLSearchParams(location.search),
+    [location.search]
+  );
+
+  const paymentReference = searchParams.get("reference") || searchParams.get("trxref");
+  const verifyStatus = searchParams.get("verify") || searchParams.get("status");
+
   useEffect(() => {
+    let isMounted = true;
+
+    const restoreSession = async () => {
+      if (isAuthenticated && currentUser) {
+        if (isMounted) {
+          setAuthResolved(true);
+        }
+        return;
+      }
+
+      try {
+        const restoredUser = await getUser();
+        if (restoredUser) {
+          dispatch(setUser(restoredUser));
+        }
+      } catch (_restoreError) {
+      } finally {
+        if (isMounted) {
+          setAuthResolved(true);
+        }
+      }
+    };
+
+    restoreSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [dispatch, isAuthenticated, currentUser]);
+
+  useEffect(() => {
+    if (!authResolved) {
+      return;
+    }
+
+    const isPaymentReturn = Boolean(paymentReference);
+
+    if (!isAuthenticated || !currentUser) {
+      if (isPaymentReturn) {
+        return;
+      }
+
+      navigate("/login", {
+        state: {
+          redirectTo: "/checkout",
+          fromCheckout: true,
+        },
+      });
+      return;
+    }
+
     const socket = getSocket();
     if (!socket) return;
 
@@ -72,7 +131,15 @@ const Checkout = () => {
         socket.emit("cart:cancelCheckout");
       }
     };
-  }, [dispatch, navigate, reservationStatus]);
+  }, [
+    dispatch,
+    navigate,
+    reservationStatus,
+    isAuthenticated,
+    currentUser,
+    authResolved,
+    paymentReference,
+  ]);
 
   const handleReservationExpired = () => {
     toast.error("Your checkout time has expired. Please try again.", {
@@ -82,13 +149,54 @@ const Checkout = () => {
     navigate("/cart");
   };
 
-  // Restore form data from location state if coming back from login
   useEffect(() => {
-    if (location.state?.formData) {
-      setFormData(location.state.formData);
-      setStep(location.state.step || 1);
-    }
-  }, [location.state]);
+    const verifyReturnPayment = async () => {
+      if (!paymentReference) {
+        return;
+      }
+
+      const verifyingKey = `verifying:${paymentReference}`;
+      const alreadyVerified = sessionStorage.getItem(`verified:${paymentReference}`);
+      const currentlyVerifying = sessionStorage.getItem(verifyingKey);
+      if (alreadyVerified || currentlyVerifying) {
+        return;
+      }
+
+      try {
+        sessionStorage.setItem(verifyingKey, "1");
+        setVerifying(true);
+        setCheckoutError("");
+
+        const persistedShipping = sessionStorage.getItem("checkoutShippingAddress");
+        const shippingAddress = persistedShipping ? JSON.parse(persistedShipping) : undefined;
+
+        await verifyMarketplaceCheckout({
+          reference: paymentReference,
+          status: verifyStatus === "failed" ? "failed" : undefined,
+          shippingAddress,
+        });
+
+        sessionStorage.setItem(`verified:${paymentReference}`, "1");
+        sessionStorage.removeItem(verifyingKey);
+        toast.success("Payment verified and order created successfully");
+        dispatch(clearCart());
+        navigate("/track-order", { replace: true });
+      } catch (error) {
+        sessionStorage.removeItem(verifyingKey);
+        setCheckoutError(error.message || "Verification failed");
+        toast.error(error.message || "Verification failed");
+      } finally {
+        setVerifying(false);
+      }
+    };
+
+    verifyReturnPayment();
+  }, [
+    paymentReference,
+    verifyStatus,
+    dispatch,
+    navigate,
+  ]);
 
   const handleInputChange = (e) => {
     setFormData({
@@ -98,7 +206,7 @@ const Checkout = () => {
   };
 
   const handleNext = () => {
-    if (step < 3) {
+    if (step < 2) {
       setStep(step + 1);
     }
   };
@@ -109,53 +217,94 @@ const Checkout = () => {
     }
   };
 
-  const handlePlaceOrder = async () => {
-    // Check if user is logged in
+  const toShippingAddress = () => {
+    if (fulfillmentMethod === "pickup") {
+      return {
+        fulfillmentMethod: "pickup",
+        pickupLocation: "Nino's store, Lafe Junction, Akure",
+      };
+    }
+
+    return {
+      fulfillmentMethod: "delivery",
+      fullName: formData.fullName,
+      email: formData.email,
+      phone: formData.phone,
+      street: formData.address,
+      state: formData.state,
+      country: formData.country,
+    };
+  };
+
+  const validateShipping = () => {
+    if (fulfillmentMethod === "pickup") {
+      return true;
+    }
+
+    const requiredFields = [
+      "fullName",
+      "email",
+      "phone",
+      "address",
+      "state",
+      "country",
+    ];
+    return requiredFields.every((field) => String(formData[field] || "").trim());
+  };
+
+  const createUuid = () =>
+    (window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  const handleProceedToPayment = async () => {
+    if (!validateShipping()) {
+      setCheckoutError("Please complete the required delivery information before continuing");
+      return;
+    }
+
     if (!currentUser || !isAuthenticated) {
-      toast.info("Please log in to place your order");
-      // Save current form data and step to restore after login
       navigate("/login", {
-        state: {
-          fromCheckout: true,
-          formData: formData,
-          step: step,
-          redirectTo: "/checkout",
-        },
+        state: { redirectTo: "/checkout", fromCheckout: true },
       });
       return;
     }
 
     try {
-      const shippingAddress = {
-        fullName: `${formData.firstName} ${formData.lastName}`.trim(),
-        email: formData.email,
-        phone: formData.phone,
-        street: formData.address,
-        city: formData.city,
-        state: formData.state,
-        zipCode: formData.zipCode,
-        country: formData.country,
-      };
+      setSubmitting(true);
+      setCheckoutError("");
 
-      await createOrder({ shippingAddress });
+      const shippingAddress = toShippingAddress();
+      sessionStorage.setItem("checkoutShippingAddress", JSON.stringify(shippingAddress));
 
-      toast.success("Order placed successfully! Thank you for your purchase.", {
-        duration: 5000,
-      });
-      dispatch(clearCart());
-      setTimeout(() => {
-        navigate("/track-order");
-      }, 500);
+      const idempotencyKey = createUuid();
+      const correlationId = createUuid();
+
+      const response = await initializeMarketplaceCheckout(
+        {
+          shippingAddress,
+          amount: finalTotal,
+          sessionId: localStorage.getItem("sessionId") || null,
+        },
+        idempotencyKey,
+        correlationId
+      );
+
+      if (!response?.authorizationUrl) {
+        throw new Error("Payment provider did not return authorization URL");
+      }
+
+      window.location.href = response.authorizationUrl;
     } catch (error) {
-      toast.error(error.message || "Failed to place order");
+      setCheckoutError(error.message || "Failed to initialize checkout");
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  const shipping = 15.0;
+  const shipping = fulfillmentMethod === "pickup" ? 0 : 15.0;
   const tax = totalAmount * 0.08; // 8% tax
   const finalTotal = totalAmount + shipping + tax;
 
-  if (items.length === 0) {
+  if (items.length === 0 && !paymentReference) {
     navigate("/cart");
     return null;
   }
@@ -175,39 +324,60 @@ const Checkout = () => {
       <div className="checkout-progress">
         <div className={`progress-item ${step >= 1 ? "active" : ""}`}>
           <div className="progress-circle">1</div>
-          <span>Shipping</span>
+          <span>Delivery</span>
         </div>
         <div className={`progress-item ${step >= 2 ? "active" : ""}`}>
           <div className="progress-circle">2</div>
-          <span>Payment</span>
-        </div>
-        <div className={`progress-item ${step >= 3 ? "active" : ""}`}>
-          <div className="progress-circle">3</div>
           <span>Review</span>
         </div>
       </div>
+
+      {checkoutError ? <p className="checkout-error">{checkoutError}</p> : null}
+      {verifying ? <p className="checkout-info">Verifying payment and finalizing order...</p> : null}
 
       <div className="checkout-content">
         <div className="checkout-form">
           {step === 1 && (
             <div className="form-section">
-              <h2>Shipping Information</h2>
+              <h2>How would you like to receive your order?</h2>
+
+              <div className="fulfillment-options">
+                <button
+                  type="button"
+                  className={`fulfillment-option ${fulfillmentMethod === "delivery" ? "active" : ""}`}
+                  onClick={() => {
+                    setFulfillmentMethod("delivery");
+                    setCheckoutError("");
+                  }}
+                >
+                  Delivery
+                </button>
+                <button
+                  type="button"
+                  className={`fulfillment-option ${fulfillmentMethod === "pickup" ? "active" : ""}`}
+                  onClick={() => {
+                    setFulfillmentMethod("pickup");
+                    setCheckoutError("");
+                  }}
+                >
+                  Pick up at Nino's store
+                </button>
+              </div>
+
+              {fulfillmentMethod === "pickup" ? (
+                <div className="pickup-note">
+                  Pickup location: Nino's store, Lafe Junction, Akure.
+                </div>
+              ) : (
               <div className="form-grid">
                 <input
                   type="text"
-                  name="firstName"
-                  placeholder="First Name *"
-                  value={formData.firstName}
+                  name="fullName"
+                  placeholder="Full Name *"
+                  value={formData.fullName}
                   onChange={handleInputChange}
                   required
-                />
-                <input
-                  type="text"
-                  name="lastName"
-                  placeholder="Last Name *"
-                  value={formData.lastName}
-                  onChange={handleInputChange}
-                  required
+                  className="full-width"
                 />
                 <input
                   type="email"
@@ -230,7 +400,7 @@ const Checkout = () => {
                 <input
                   type="text"
                   name="address"
-                  placeholder="Street Address *"
+                  placeholder="Address *"
                   value={formData.address}
                   onChange={handleInputChange}
                   required
@@ -238,25 +408,9 @@ const Checkout = () => {
                 />
                 <input
                   type="text"
-                  name="city"
-                  placeholder="City *"
-                  value={formData.city}
-                  onChange={handleInputChange}
-                  required
-                />
-                <input
-                  type="text"
                   name="state"
-                  placeholder="State/Province *"
+                  placeholder="State *"
                   value={formData.state}
-                  onChange={handleInputChange}
-                  required
-                />
-                <input
-                  type="text"
-                  name="zipCode"
-                  placeholder="ZIP/Postal Code *"
-                  value={formData.zipCode}
                   onChange={handleInputChange}
                   required
                 />
@@ -269,76 +423,34 @@ const Checkout = () => {
                   required
                 />
               </div>
+              )}
             </div>
           )}
 
           {step === 2 && (
-            <div className="form-section">
-              <h2>Payment Information</h2>
-              <div className="form-grid">
-                <input
-                  type="text"
-                  name="cardNumber"
-                  placeholder="Card Number *"
-                  value={formData.cardNumber}
-                  onChange={handleInputChange}
-                  required
-                  className="full-width"
-                  maxLength="16"
-                />
-                <input
-                  type="text"
-                  name="cardName"
-                  placeholder="Name on Card *"
-                  value={formData.cardName}
-                  onChange={handleInputChange}
-                  required
-                  className="full-width"
-                />
-                <input
-                  type="text"
-                  name="expiryDate"
-                  placeholder="MM/YY *"
-                  value={formData.expiryDate}
-                  onChange={handleInputChange}
-                  required
-                  maxLength="5"
-                />
-                <input
-                  type="text"
-                  name="cvv"
-                  placeholder="CVV *"
-                  value={formData.cvv}
-                  onChange={handleInputChange}
-                  required
-                  maxLength="4"
-                />
-              </div>
-            </div>
-          )}
-
-          {step === 3 && (
             <div className="form-section review-section">
               <h2>Review Your Order</h2>
 
               <div className="review-group">
-                <h3>Shipping Address</h3>
-                <p>
-                  {formData.firstName} {formData.lastName}
-                </p>
-                <p>{formData.address}</p>
-                <p>
-                  {formData.city}, {formData.state} {formData.zipCode}
-                </p>
-                <p>{formData.country}</p>
-                <p>{formData.email}</p>
-                <p>{formData.phone}</p>
+                <h3>{fulfillmentMethod === "pickup" ? "Pickup Details" : "Delivery Details"}</h3>
+                {fulfillmentMethod === "pickup" ? (
+                  <p>Nino's store, Lafe Junction, Akure</p>
+                ) : (
+                  <>
+                    <p>{formData.fullName}</p>
+                    <p>{formData.address}</p>
+                    <p>{formData.state}</p>
+                    <p>{formData.country}</p>
+                    <p>{formData.email}</p>
+                    <p>{formData.phone}</p>
+                  </>
+                )}
               </div>
 
               <div className="review-group">
                 <h3>Payment Method</h3>
-                <p>Card ending in {formData.cardNumber.slice(-4)}</p>
-                <p>{formData.cardName}</p>
+                <p>Paystack secure redirect</p>
+                <p>No manual card entry on this page</p>
               </div>
 
               <div className="review-group">
@@ -361,13 +473,17 @@ const Checkout = () => {
                 Back
               </button>
             )}
-            {step < 3 ? (
+            {step < 2 ? (
               <button className="btn-next" onClick={handleNext}>
                 Continue
               </button>
             ) : (
-              <button className="btn-place-order" onClick={handlePlaceOrder}>
-                Place Order
+              <button
+                className="btn-place-order"
+                onClick={handleProceedToPayment}
+                disabled={submitting || verifying}
+              >
+                {submitting ? "Redirecting..." : "Proceed to Paystack"}
               </button>
             )}
           </div>
@@ -393,7 +509,7 @@ const Checkout = () => {
               <span>₦{totalAmount.toLocaleString()}</span>
             </div>
             <div className="summary-row">
-              <span>Shipping</span>
+              <span>{fulfillmentMethod === "pickup" ? "Pickup" : "Shipping"}</span>
               <span>₦{shipping.toLocaleString()}</span>
             </div>
             <div className="summary-row">
