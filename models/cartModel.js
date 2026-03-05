@@ -107,6 +107,7 @@ const cartSchema = mongoose.Schema(
 // Index for faster queries
 cartSchema.index({ userId: 1 });
 cartSchema.index({ sessionId: 1 });
+cartSchema.index({ reservationStatus: 1, reservationExpiry: 1, updatedAt: -1 });
 
 const Cart = mongoose.model("Cart", cartSchema);
 module.exports = Cart;

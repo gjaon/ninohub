@@ -167,7 +167,11 @@ io.use((socket, next) => {
   next();
 });
 
-const loadProductsWithEffectiveAvailability = async ({ excludeCartId = null, refreshIfStale = true } = {}) => {
+const loadProductsWithEffectiveAvailability = async ({
+  excludeCartId = null,
+  refreshIfStale = true,
+  availabilityUseCache = true,
+} = {}) => {
   const {
     __testables: { toFrontendProduct },
   } = require("./controllers/productController");
@@ -200,12 +204,18 @@ const loadProductsWithEffectiveAvailability = async ({ excludeCartId = null, ref
     }
 
     const normalized = projected.map((item) => toFrontendProduct(item));
-    return applyEffectiveAvailability(normalized, { excludeCartId });
+    return applyEffectiveAvailability(normalized, {
+      excludeCartId,
+      useCache: availabilityUseCache,
+    });
   }
 
   const localProducts = require("./data/product");
   const normalizedLocalProducts = localProducts.map((item) => toFrontendProduct(item));
-  return applyEffectiveAvailability(normalizedLocalProducts, { excludeCartId });
+  return applyEffectiveAvailability(normalizedLocalProducts, {
+    excludeCartId,
+    useCache: availabilityUseCache,
+  });
 };
 
 const assertCartFitsAvailability = ({ cart, products }) => {
@@ -337,6 +347,7 @@ io.on("connection", (socket) => {
         const productsWithAvailability = await loadProductsWithEffectiveAvailability({
           excludeCartId: cart._id,
           refreshIfStale: false,
+          availabilityUseCache: false,
         });
         assertCartFitsAvailability({
           cart,
@@ -469,6 +480,7 @@ io.on("connection", (socket) => {
         const productsWithAvailability = await loadProductsWithEffectiveAvailability({
           excludeCartId: cart._id,
           refreshIfStale: false,
+          availabilityUseCache: false,
         });
         assertCartFitsAvailability({
           cart,
@@ -543,6 +555,7 @@ io.on("connection", (socket) => {
         const productsWithAvailability = await loadProductsWithEffectiveAvailability({
           excludeCartId: cart._id,
           refreshIfStale: false,
+          availabilityUseCache: false,
         });
         assertCartFitsAvailability({
           cart,

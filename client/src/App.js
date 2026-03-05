@@ -53,13 +53,30 @@ function App() {
   const dispatch = useDispatch();
   const { currentUser } = useSelector((state) => state.user);
   const products = useSelector((state) => state.products.items);
+  const rehydrated = useSelector((state) => state?._persist?.rehydrated ?? true);
   const marketplaceLastEventAt = useSelector((state) => state.marketplaceSync?.syncMeta?.lastEventAt);
   const hasSocketSyncedProductsRef = React.useRef(false);
   const lastSocketSyncAtRef = React.useRef(0);
   const pendingProductsResyncRef = React.useRef(null);
+  const productsCountRef = React.useRef(products.length);
+  const rehydratedRef = React.useRef(rehydrated);
+
+  useEffect(() => {
+    productsCountRef.current = products.length;
+  }, [products.length]);
+
+  useEffect(() => {
+    rehydratedRef.current = rehydrated;
+  }, [rehydrated]);
 
   useEffect(() => {
     let didCancel = false;
+
+    if (!rehydrated) {
+      return () => {
+        didCancel = true;
+      };
+    }
 
     const loadProducts = async () => {
       dispatch(setLoading(true));
@@ -89,7 +106,7 @@ function App() {
     return () => {
       didCancel = true;
     };
-  }, [dispatch, products.length]);
+  }, [dispatch, products.length, rehydrated]);
 
   // Restore user session on app load
   useEffect(() => {
@@ -219,7 +236,15 @@ function App() {
 
     // Sync cart and products when component mounts
     socket.emit("cart:sync", { sessionId: localStorage.getItem("sessionId") });
-    socket.emit("products:sync");
+    const initialProductsSyncTimer = setTimeout(() => {
+      if (!rehydratedRef.current) {
+        return;
+      }
+
+      if (!productsCountRef.current && !hasSocketSyncedProductsRef.current) {
+        socket.emit("products:sync");
+      }
+    }, 1200);
 
     return () => {
       // Cleanup: remove listeners (but keep socket connected)
@@ -235,6 +260,7 @@ function App() {
         clearTimeout(pendingProductsResyncRef.current);
         pendingProductsResyncRef.current = null;
       }
+      clearTimeout(initialProductsSyncTimer);
     };
   }, [dispatch, currentUser?.token, marketplaceLastEventAt]);
 

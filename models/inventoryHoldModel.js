@@ -125,5 +125,6 @@ const inventoryHoldSchema = mongoose.Schema(
 );
 
 inventoryHoldSchema.index({ buyerId: 1, idempotencyKey: 1 }, { unique: true });
+inventoryHoldSchema.index({ status: 1, expiresAt: 1, updatedAt: -1 });
 
 module.exports = mongoose.model("InventoryHold", inventoryHoldSchema);

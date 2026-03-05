@@ -1,6 +1,9 @@
 const Cart = require("../models/cartModel");
 const InventoryHold = require("../models/inventoryHoldModel");
 
+const availabilityCacheTtlMs = Number(process.env.PRODUCT_AVAILABILITY_CACHE_TTL_MS || 2000);
+const combinedHoldTotalsCache = new Map();
+
 const normalizeId = (value) => String(value || "").trim();
 
 const toFiniteQuantity = (value) => {
@@ -58,7 +61,32 @@ const aggregateHoldItems = (items = [], listingTotals = new Map(), variantTotals
   };
 };
 
-const collectCombinedHoldTotals = async ({ excludeCartId = null } = {}) => {
+const cloneHoldTotals = ({ listingTotals = new Map(), variantTotals = new Map() } = {}) => ({
+  listingTotals: new Map(listingTotals),
+  variantTotals: new Map(variantTotals),
+});
+
+const buildCacheKey = ({ excludeCartId = null } = {}) => String(excludeCartId || "all");
+
+const collectCombinedHoldTotals = async ({ excludeCartId = null, useCache = true } = {}) => {
+  const cacheEnabled = useCache && Number.isFinite(availabilityCacheTtlMs) && availabilityCacheTtlMs > 0;
+  const cacheKey = buildCacheKey({ excludeCartId });
+
+  if (cacheEnabled) {
+    const now = Date.now();
+    const cached = combinedHoldTotalsCache.get(cacheKey);
+
+    if (cached?.value && cached.expiresAt > now) {
+      return cloneHoldTotals(cached.value);
+    }
+
+    if (cached?.promise) {
+      const pendingResult = await cached.promise;
+      return cloneHoldTotals(pendingResult);
+    }
+  }
+
+  const computePromise = (async () => {
   const now = new Date();
   const listingTotals = new Map();
   const variantTotals = new Map();
@@ -92,10 +120,40 @@ const collectCombinedHoldTotals = async ({ excludeCartId = null } = {}) => {
     listingTotals,
     variantTotals,
   };
+  })();
+
+  if (cacheEnabled) {
+    combinedHoldTotalsCache.set(cacheKey, {
+      value: null,
+      expiresAt: 0,
+      promise: computePromise,
+    });
+  }
+
+  try {
+    const computed = await computePromise;
+
+    if (cacheEnabled) {
+      combinedHoldTotalsCache.set(cacheKey, {
+        value: computed,
+        expiresAt: Date.now() + availabilityCacheTtlMs,
+      });
+    }
+
+    return cloneHoldTotals(computed);
+  } catch (error) {
+    if (cacheEnabled) {
+      combinedHoldTotalsCache.delete(cacheKey);
+    }
+    throw error;
+  }
 };
 
 const applyEffectiveAvailability = async (products = [], options = {}) => {
-  const holdTotals = await collectCombinedHoldTotals(options);
+  const holdTotals = await collectCombinedHoldTotals({
+    excludeCartId: options?.excludeCartId || null,
+    useCache: options?.useCache !== false,
+  });
 
   const nextProducts = (Array.isArray(products) ? products : []).map((product) => {
     const listingId = normalizeId(product?.listingId || product?.id || product?.providerProductId);
@@ -159,4 +217,5 @@ module.exports = {
   collectCombinedHoldTotals,
   applyEffectiveAvailability,
   resolveLineAvailableQuantity,
+  cloneHoldTotals,
 };
