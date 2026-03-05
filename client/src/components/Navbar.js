@@ -6,15 +6,17 @@ import "./Navbar.css";
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const {
-    totalQuantity,
+    items,
+    customizations,
     reservationStatus,
     remainingTime,
     reservationExpiry,
     isExpired,
   } = useSelector((state) => state.cart);
+  const cartItemCount = (items?.length || 0) + (customizations?.length || 0);
   const { isAuthenticated, currentUser } = useSelector((state) => state.user);
   const isCountdownActive =
-    totalQuantity > 0 &&
+    cartItemCount > 0 &&
     !isExpired &&
     reservationStatus === "active" &&
     remainingTime > 0;
@@ -104,7 +106,7 @@ const Navbar = () => {
               className="cart-icon"
             />
             <span>Cart</span>
-            {totalQuantity > 0 && (
+            {cartItemCount > 0 && (
               <span
                 key={reservationExpiry || "badge"}
                 className={`cart-badge${isCountdownActive ? " countdown-active" : ""}`}
@@ -116,7 +118,7 @@ const Navbar = () => {
                     <circle className="ring-progress" cx="18" cy="18" r="15.915" />
                   </svg>
                 )}
-                {totalQuantity}
+                {cartItemCount}
               </span>
             )}
           </Link>

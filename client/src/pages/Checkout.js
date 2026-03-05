@@ -18,6 +18,7 @@ const Checkout = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { 
+    cartId,
     items, 
     totalAmount, 
     reservationExpiry, 
@@ -111,7 +112,10 @@ const Checkout = () => {
     };
 
     // Listen for reservation expiry
-    const handleReservationExpired = () => {
+    const handleReservationExpired = (payload = {}) => {
+      if (cartId && payload?.cartId && String(payload.cartId) !== String(cartId)) {
+        return;
+      }
       toast.error("Your checkout time has expired. Items have been released.", {
         duration: 5000,
       });
@@ -134,6 +138,7 @@ const Checkout = () => {
   }, [
     dispatch,
     navigate,
+    cartId,
     reservationStatus,
     isAuthenticated,
     currentUser,
@@ -300,9 +305,8 @@ const Checkout = () => {
     }
   };
 
-  const shipping = fulfillmentMethod === "pickup" ? 0 : 15.0;
-  const tax = totalAmount * 0.08; // 8% tax
-  const finalTotal = totalAmount + shipping + tax;
+  const tax = totalAmount * 0.025;
+  const finalTotal = totalAmount + tax;
 
   if (items.length === 0 && !paymentReference) {
     navigate("/cart");
@@ -510,10 +514,14 @@ const Checkout = () => {
             </div>
             <div className="summary-row">
               <span>{fulfillmentMethod === "pickup" ? "Pickup" : "Shipping"}</span>
-              <span>₦{shipping.toLocaleString()}</span>
+              <span>
+                {fulfillmentMethod === "pickup"
+                  ? "Pickup at store"
+                  : "Shipping fee will be communicated after order"}
+              </span>
             </div>
             <div className="summary-row">
-              <span>Tax (8%)</span>
+              <span>VAT (2.5%)</span>
               <span>₦{tax.toLocaleString()}</span>
             </div>
             <div className="summary-divider"></div>

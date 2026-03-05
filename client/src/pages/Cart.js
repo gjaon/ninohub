@@ -13,6 +13,7 @@ const Cart = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { 
+    cartId,
     items, 
     totalQuantity, 
     totalAmount, 
@@ -28,7 +29,10 @@ const Cart = () => {
     if (!socket) return;
 
     // Listen for reservation expiry
-    const handleReservationExpired = () => {
+    const handleReservationExpired = (payload = {}) => {
+      if (cartId && payload?.cartId && String(payload.cartId) !== String(cartId)) {
+        return;
+      }
       toast.error("Your cart reservation has expired. Items have been released.", {
         duration: 5000,
       });
@@ -40,7 +44,7 @@ const Cart = () => {
     return () => {
       socket.off("cart:reservation:expired", handleReservationExpired);
     };
-  }, [dispatch]);
+  }, [dispatch, cartId]);
 
   const handleReservationExpired = () => {
     toast.error("Your reservation has expired. Please add items again.", {
@@ -295,12 +299,12 @@ const Cart = () => {
 
           <div className="summary-row">
             <span>Shipping</span>
-            <span>Calculated at checkout</span>
+            <span>Shipping fee will be communicated after order</span>
           </div>
 
           <div className="summary-row">
-            <span>Tax</span>
-            <span>Calculated at checkout</span>
+            <span>VAT</span>
+            <span>2.5% at checkout</span>
           </div>
 
           <div className="summary-divider"></div>

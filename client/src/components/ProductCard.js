@@ -22,7 +22,9 @@ const ProductCard = ({ product }) => {
   const handleAddToCart = (e) => {
     e.stopPropagation();
     if (product.listingType === "group" && Array.isArray(product.variants) && product.variants.length > 0) {
-      navigate(`/products/${product.id}`);
+      navigate(`/products/${product.id}`, {
+        state: { scrollToVariants: true },
+      });
       toast.info("Please select a variant before adding to cart");
       return;
     }
@@ -42,7 +44,9 @@ const ProductCard = ({ product }) => {
   };
 
   const handleCardClick = () => {
-    navigate(`/products/${product.id}`);
+    navigate(`/products/${product.id}`, {
+      state: { scrollToVariants: product.listingType === "group" },
+    });
   };
 
   return (

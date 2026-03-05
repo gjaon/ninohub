@@ -2,6 +2,7 @@ import { createSlice } from "@reduxjs/toolkit";
 import { calculatePrice, getProductDiscountPercent } from "../../utils/pricing";
 
 const initialState = {
+  cartId: null,
   items: [],
   customizations: [],
   totalQuantity: 0,
@@ -97,6 +98,7 @@ const cartSlice = createSlice({
       );
     },
     clearCart: (state) => {
+      state.cartId = null;
       state.items = [];
       state.customizations = [];
       state.totalQuantity = 0;
@@ -115,6 +117,7 @@ const cartSlice = createSlice({
     // Sync cart from backend
     syncCart: (state, action) => {
       const backendCart = action.payload;
+      state.cartId = backendCart?._id || backendCart?.id || null;
       
       // Transform backend cart items to frontend format with pricing calculations
       state.items = (backendCart.items || []).map(item => {
@@ -171,6 +174,7 @@ const cartSlice = createSlice({
     // Update cart from WebSocket
     updateCartFromSocket: (state, action) => {
       const backendCart = action.payload;
+      state.cartId = backendCart?._id || backendCart?.id || null;
       
       // Transform backend cart items to frontend format with pricing calculations
       state.items = (backendCart.items || []).map(item => {

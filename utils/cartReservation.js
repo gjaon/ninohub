@@ -140,8 +140,13 @@ const cleanupExpiredReservations = async (io) => {
       
       // Notify client via socket
       if (io) {
-        const socketId = cart.userId || cart.sessionId;
-        io.emit("cart:reservation:expired", { cartId: cart._id.toString() });
+        const payload = { cartId: cart._id.toString() };
+        if (cart.userId) {
+          io.to(`buyer:${cart.userId}`).emit("cart:reservation:expired", payload);
+        }
+        if (cart.sessionId) {
+          io.to(`session:${cart.sessionId}`).emit("cart:reservation:expired", payload);
+        }
       }
     }
   }
