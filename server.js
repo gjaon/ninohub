@@ -45,6 +45,10 @@ const {
   recalculateCartTotals,
   applyVariantSwitch,
 } = require("./utils/cartLineUtils");
+const {
+  applyEffectiveAvailability,
+  resolveLineAvailableQuantity,
+} = require("./utils/productAvailability");
 const app = express();
 const httpServer = http.createServer(app);
 
@@ -155,6 +159,70 @@ io.use((socket, next) => {
   next();
 });
 
+const loadProductsWithEffectiveAvailability = async ({ excludeCartId = null, refreshIfStale = true } = {}) => {
+  const {
+    __testables: { toFrontendProduct },
+  } = require("./controllers/productController");
+
+  if (shouldUseProviderProducts()) {
+    const {
+      getProjectedProducts,
+      syncInventoryProjection,
+      syncInventoryProjectionIfStale,
+    } = require("./services/marketplace/inventoryProjectionService");
+
+    let projected = await getProjectedProducts();
+
+    if (refreshIfStale) {
+      await syncInventoryProjectionIfStale({
+        trigger: "on-demand-socket-products-stale-refresh",
+        maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
+      }).catch((error) => {
+        console.warn("[socket:products:sync] stale refresh skipped", error.message);
+      });
+
+      projected = await getProjectedProducts();
+    }
+
+    if (!projected.length) {
+      await syncInventoryProjection({ trigger: "on-demand-socket-products-sync" });
+      projected = await getProjectedProducts();
+    }
+
+    if (!projected.length) {
+      return [];
+    }
+
+    const normalized = projected.map((item) => toFrontendProduct(item));
+    return applyEffectiveAvailability(normalized, { excludeCartId });
+  }
+
+  const localProducts = require("./data/product");
+  const normalizedLocalProducts = localProducts.map((item) => toFrontendProduct(item));
+  return applyEffectiveAvailability(normalizedLocalProducts, { excludeCartId });
+};
+
+const assertCartFitsAvailability = ({ cart, products }) => {
+  for (const item of cart.items || []) {
+    const requestedQty = Number(item?.quantity || 0);
+    if (!Number.isFinite(requestedQty) || requestedQty <= 0) {
+      continue;
+    }
+
+    const availableQty = resolveLineAvailableQuantity(products, {
+      listingId: item?.listingId,
+      parentGroupId: item?.parentGroupId,
+      productId: item?.productId,
+      variantId: item?.variantId,
+    });
+
+    if (requestedQty > availableQty) {
+      const itemName = item?.productName || "item";
+      throw new Error(`Only ${Math.max(0, availableQty)} available for ${itemName}`);
+    }
+  }
+};
+
 // Socket.io connection handler
 io.on("connection", (socket) => {
   console.log(`Client connected: ${socket.id}, sessionId: ${socket.sessionId}`);
@@ -218,6 +286,7 @@ io.on("connection", (socket) => {
         variantId,
       });
       const existingItem = existingItemIndex >= 0 ? cart.items[existingItemIndex] : null;
+      const previousItems = cart.items.map((item) => (item?.toObject ? item.toObject() : { ...item }));
       
       if (existingItem) {
         existingItem.quantity = Number(existingItem.quantity || 0) + Number(quantity || 0);
@@ -257,6 +326,25 @@ io.on("connection", (socket) => {
       }
 
       recalculateCartTotals(cart);
+
+      try {
+        const productsWithAvailability = await loadProductsWithEffectiveAvailability({
+          excludeCartId: cart._id,
+          refreshIfStale: false,
+        });
+        assertCartFitsAvailability({
+          cart,
+          products: productsWithAvailability,
+        });
+      } catch (availabilityError) {
+        cart.items = previousItems;
+        recalculateCartTotals(cart);
+        socket.emit("cart:error", { message: availabilityError.message });
+        if (typeof ack === "function") {
+          ack({ ok: false, message: availabilityError.message });
+        }
+        return;
+      }
 
       await cart.save();
 
@@ -356,6 +444,8 @@ io.on("connection", (socket) => {
 
       if (!cart) return;
 
+      const previousItems = cart.items.map((item) => (item?.toObject ? item.toObject() : { ...item }));
+
       if (quantity < 1) {
         const existingIndex = findCartItemIndex(cart.items, identity);
         if (existingIndex >= 0) {
@@ -368,6 +458,22 @@ io.on("connection", (socket) => {
       }
 
       recalculateCartTotals(cart);
+
+      try {
+        const productsWithAvailability = await loadProductsWithEffectiveAvailability({
+          excludeCartId: cart._id,
+          refreshIfStale: false,
+        });
+        assertCartFitsAvailability({
+          cart,
+          products: productsWithAvailability,
+        });
+      } catch (availabilityError) {
+        cart.items = previousItems;
+        recalculateCartTotals(cart);
+        socket.emit("cart:error", { message: availabilityError.message });
+        return;
+      }
 
       await cart.save();
 
@@ -408,6 +514,8 @@ io.on("connection", (socket) => {
       const cart = await Cart.findOne(query);
       if (!cart) return;
 
+      const previousItems = cart.items.map((item) => (item?.toObject ? item.toObject() : { ...item }));
+
       const currentIndex = findCartItemIndex(cart.items, currentIdentity);
       if (currentIndex < 0) {
         socket.emit("cart:error", { message: "Cart item not found for variant switch" });
@@ -424,6 +532,23 @@ io.on("connection", (socket) => {
       });
 
       recalculateCartTotals(cart);
+
+      try {
+        const productsWithAvailability = await loadProductsWithEffectiveAvailability({
+          excludeCartId: cart._id,
+          refreshIfStale: false,
+        });
+        assertCartFitsAvailability({
+          cart,
+          products: productsWithAvailability,
+        });
+      } catch (availabilityError) {
+        cart.items = previousItems;
+        recalculateCartTotals(cart);
+        socket.emit("cart:error", { message: availabilityError.message });
+        return;
+      }
+
       await cart.save();
 
       if (cart.items.length > 0) {
@@ -563,44 +688,14 @@ io.on("connection", (socket) => {
 
   socket.on("products:sync", async () => {
     try {
-      if (shouldUseProviderProducts()) {
-        const {
-          getProjectedProducts,
-          syncInventoryProjection,
-          syncInventoryProjectionIfStale,
-        } = require("./services/marketplace/inventoryProjectionService");
-        let projected = await getProjectedProducts();
-
-        await syncInventoryProjectionIfStale({
-          trigger: "on-demand-socket-products-stale-refresh",
-          maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
-        }).catch((error) => {
-          console.warn("[socket:products:sync] stale refresh skipped", error.message);
+      const productsWithAvailability = await loadProductsWithEffectiveAvailability();
+      if (!productsWithAvailability.length) {
+        socket.emit("products:error", {
+          message: "Provider inventory is unavailable. No projected products found.",
         });
-        projected = await getProjectedProducts();
-
-        if (!projected.length) {
-          await syncInventoryProjection({ trigger: "on-demand-socket-products-sync" });
-          projected = await getProjectedProducts();
-        }
-
-        if (!projected.length) {
-          socket.emit("products:error", {
-            message: "Provider inventory is unavailable. No projected products found.",
-          });
-          return;
-        }
-
-        const {
-          __testables: { toFrontendProduct },
-        } = require("./controllers/productController");
-        const normalized = projected.map((item) => toFrontendProduct(item));
-        socket.emit("products:synced", normalized);
         return;
       }
-
-      const products = require("./data/product");
-      socket.emit("products:synced", products);
+      socket.emit("products:synced", productsWithAvailability);
     } catch (error) {
       console.error("products:sync error:", error);
       socket.emit("products:error", { message: "Failed to sync products" });

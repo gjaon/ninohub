@@ -4,8 +4,12 @@ import { useSearchParams } from "react-router-dom";
 import {
   filterByCategory,
   searchProducts,
+  setProducts,
+  setLoading,
+  setError,
 } from "../redux/slices/productsSlice";
 import ProductCard from "../components/ProductCard";
+import { fetchProducts } from "../services/products";
 import "./Products.css";
 
 const Products = () => {
@@ -16,6 +20,7 @@ const Products = () => {
   );
   const [searchTerm, setSearchTerm] = React.useState("");
   const [currentPage, setCurrentPage] = React.useState(1);
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
   const itemsPerPage = 9;
 
   // Calculate pagination
@@ -46,6 +51,25 @@ const Products = () => {
     const value = e.target.value;
     setSearchTerm(value);
     dispatch(searchProducts(value));
+  };
+
+  const handleRefreshListings = async () => {
+    if (isRefreshing) {
+      return;
+    }
+
+    setIsRefreshing(true);
+    dispatch(setLoading(true));
+    try {
+      const latestProducts = await fetchProducts();
+      dispatch(setProducts(latestProducts));
+      setCurrentPage(1);
+    } catch (error) {
+      dispatch(setError(error.message || "Unable to refresh listings"));
+    } finally {
+      setIsRefreshing(false);
+      dispatch(setLoading(false));
+    }
   };
 
   const handlePageChange = (pageNumber) => {
@@ -131,6 +155,14 @@ const Products = () => {
             onChange={handleSearch}
           />
         </div>
+        <button
+          type="button"
+          className="refresh-listings-btn"
+          onClick={handleRefreshListings}
+          disabled={isRefreshing}
+        >
+          {isRefreshing ? "Refreshing..." : "Refresh"}
+        </button>
       </div>
 
       <div className="category-filters-container">

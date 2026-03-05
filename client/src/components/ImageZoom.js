@@ -1,7 +1,7 @@
 import React, { useState, useRef } from "react";
 import "./ImageZoom.css";
 
-const ImageZoom = ({ src, alt, zoomLevel = 3.5 }) => {
+const ImageZoom = ({ src, alt, zoomLevel = 3.5, onImageClick }) => {
   const [isZooming, setIsZooming] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [lensPosition, setLensPosition] = useState({ x: 0, y: 0 });
@@ -43,6 +43,7 @@ const ImageZoom = ({ src, alt, zoomLevel = 3.5 }) => {
       onMouseMove={handleMouseMove}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onClick={onImageClick}
     >
       <img ref={imgRef} src={src} alt={alt} className="zoom-source-image" />
 

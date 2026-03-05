@@ -5,6 +5,7 @@ const {
   syncInventoryProjection,
   syncInventoryProjectionIfStale,
 } = require("../services/marketplace/inventoryProjectionService");
+const { applyEffectiveAvailability } = require("../utils/productAvailability");
 
 const toSafeString = (value) => {
   if (value === null || value === undefined) {
@@ -214,7 +215,8 @@ const toFrontendProduct = (product) => {
 const getProducts = async (req, res) => {
   const useProviderProducts = shouldUseProviderProducts();
   if (!useProviderProducts) {
-    return res.status(200).json(products.map(toFrontendProduct));
+    const normalized = await applyEffectiveAvailability(products.map(toFrontendProduct));
+    return res.status(200).json(normalized);
   }
 
   let projected = await getProjectedProducts();
@@ -238,7 +240,8 @@ const getProducts = async (req, res) => {
     });
   }
 
-  return res.status(200).json(projected.map(toFrontendProduct));
+  const normalized = await applyEffectiveAvailability(projected.map(toFrontendProduct));
+  return res.status(200).json(normalized);
 };
 
 const getProductById = async (req, res) => {
@@ -265,6 +268,8 @@ const getProductById = async (req, res) => {
   } else {
     source = products.map(toFrontendProduct);
   }
+
+  source = await applyEffectiveAvailability(source);
 
   const product = source.find((item) => String(item.id) === String(id));
 

@@ -9,6 +9,10 @@ const MarketplaceWebhookEndpoint = require("../models/marketplaceWebhookEndpoint
 const BusinessEvent = require("../models/businessEventModel");
 const User = require("../models/userModel");
 const { getMarketplaceConfig } = require("../config/marketplaceConfig");
+const {
+  CHECKOUT_SHIPPING_FEE_NGN,
+  CHECKOUT_TAX_RATE,
+} = require("../config/checkoutPricing");
 const { issuePartnerSession } = require("../services/marketplace/publicAuthService");
 const {
   buildBuyerActionKey,
@@ -303,15 +307,12 @@ const normalizeOrderLineSnapshot = ({ providerLines = [], holdItems = [] } = {})
   });
 };
 
-const CHECKOUT_SHIPPING_FEE = 15;
-const CHECKOUT_TAX_RATE = 0.08;
-
 const toMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
 
 const computeCheckoutTotals = (subtotalAmount, options = {}) => {
   const isPickup = String(options.fulfillmentMethod || "").toLowerCase() === "pickup";
   const subtotal = toMoney(subtotalAmount);
-  const shipping = subtotal > 0 && !isPickup ? CHECKOUT_SHIPPING_FEE : 0;
+  const shipping = subtotal > 0 && !isPickup ? CHECKOUT_SHIPPING_FEE_NGN : 0;
   const tax = toMoney(subtotal * CHECKOUT_TAX_RATE);
   const total = toMoney(subtotal + shipping + tax);
 

@@ -42,6 +42,21 @@ const normalizeImageList = (...values) => {
   return Array.from(new Set(images.filter(Boolean)));
 };
 
+const formatVariantLabel = (value) => {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const hyphenIndex = text.indexOf("-");
+  if (hyphenIndex < 0) {
+    return text;
+  }
+
+  const trimmed = text.slice(hyphenIndex + 1).trim();
+  return trimmed || text;
+};
+
 const ProductDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -55,6 +70,8 @@ const ProductDetail = () => {
   const [variantQuantities, setVariantQuantities] = useState({});
   const [focusedVariantId, setFocusedVariantId] = useState("");
   const [selectedImage, setSelectedImage] = useState("");
+  const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth <= 768);
+  const [isMobilePreviewOpen, setIsMobilePreviewOpen] = useState(false);
   const variantSectionRef = useRef(null);
   const { addToCartSocket } = useCartSocket();
   const detailTitle = product?.listingType === "group"
@@ -70,12 +87,31 @@ const ProductDetail = () => {
     () => Object.entries(variantQuantities).filter(([, qty]) => Number(qty) > 0),
     [variantQuantities]
   );
+  const productAvailableQuantity = Math.max(0, Number(product?.availableQuantity || 0));
+  const selectedVariantAvailableQuantity = Math.max(0, Number(selectedVariant?.availableQuantity || 0));
 
   useEffect(() => {
     setVariantQuantities({});
     setFocusedVariantId("");
     setQuantity(1);
+    setIsMobilePreviewOpen(false);
   }, [id]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 768px)");
+    const updateMatch = (event) => {
+      setIsMobileViewport(event.matches);
+    };
+
+    setIsMobileViewport(media.matches);
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", updateMatch);
+      return () => media.removeEventListener("change", updateMatch);
+    }
+
+    media.addListener(updateMatch);
+    return () => media.removeListener(updateMatch);
+  }, []);
 
   useEffect(() => {
     if (product?.listingType !== "group" || !availableVariants.length) {
@@ -194,7 +230,16 @@ const ProductDetail = () => {
 
   const updateVariantQuantity = (variantId, nextQuantity) => {
     const normalizedVariantId = String(variantId || "");
-    const safeQty = Math.max(0, Number(nextQuantity) || 0);
+    const targetVariant = availableVariants.find(
+      (entry) => String(entry?.variantId || entry?.id) === normalizedVariantId
+    );
+    const maxAvailable = Math.max(0, Number(targetVariant?.availableQuantity || 0));
+    const safeQty = Math.max(0, Math.min(maxAvailable, Number(nextQuantity) || 0));
+
+    if ((Number(nextQuantity) || 0) > maxAvailable) {
+      toast.error(`Only ${maxAvailable} available for this variant`);
+    }
+
     setVariantQuantities((current) => {
       const next = { ...current };
       if (safeQty <= 0) {
@@ -209,6 +254,15 @@ const ProductDetail = () => {
   const toggleVariantSelection = (variantId, isChecked) => {
     const normalizedVariantId = String(variantId || "");
     if (isChecked) {
+      const variant = availableVariants.find(
+        (entry) => String(entry?.variantId || entry?.id) === normalizedVariantId
+      );
+      const maxAvailable = Math.max(0, Number(variant?.availableQuantity || 0));
+      if (maxAvailable < 1) {
+        toast.error("Selected variant is currently unavailable");
+        return;
+      }
+
       updateVariantQuantity(normalizedVariantId, Math.max(1, Number(variantQuantities[normalizedVariantId]) || 1));
       setFocusedVariantId(normalizedVariantId);
       return;
@@ -250,6 +304,12 @@ const ProductDetail = () => {
         );
         if (!variant) {
           errors.push("A selected variant is no longer available.");
+          continue;
+        }
+
+        const variantAvailable = Math.max(0, Number(variant?.availableQuantity || 0));
+        if ((Number(selectedQty) || 0) > variantAvailable) {
+          errors.push(`Only ${variantAvailable} available for ${formatVariantLabel(variant?.name || variantId)}.`);
           continue;
         }
 
@@ -298,6 +358,11 @@ const ProductDetail = () => {
       if (errors.length) {
         toast.error(errors[0]);
       }
+      return;
+    }
+
+    if (quantity > productAvailableQuantity) {
+      toast.error(`Only ${productAvailableQuantity} available for this product`);
       return;
     }
 
@@ -354,6 +419,7 @@ const ProductDetail = () => {
                 src={getProductImageUrl(selectedImage)}
                 alt={detailTitle}
                 zoomLevel={3.5}
+                onImageClick={isMobileViewport ? () => setIsMobilePreviewOpen(true) : undefined}
               />
               {galleryImages.length > 0 && (
                 <div className="product-thumbnail-rail" role="tablist" aria-label="Product images">
@@ -421,6 +487,13 @@ const ProductDetail = () => {
                 </strong>
               </p>
             )}
+            <p className="availability-text">
+              {product.listingType === "group"
+                ? selectedVariant
+                  ? `${selectedVariantAvailableQuantity} available for selected variant`
+                  : "Select a variant to view quantity available"
+                : `${productAvailableQuantity} available`}
+            </p>
           </div>
 
           <div className="product-description">
@@ -431,12 +504,15 @@ const ProductDetail = () => {
           {product.listingType === "group" && availableVariants.length > 0 && (
             <div className="quantity-selector" ref={variantSectionRef}>
               <label>Variants:</label>
+              <p className="variant-scroll-hint">Scroll horizontally to see more variants</p>
               <div className="variant-checkbox-list">
                 {availableVariants.map((variant) => {
                   const variantId = String(variant?.variantId || variant?.id || "");
                   const variantPrice = Number(variant?.price || product.price || 0);
+                  const variantAvailable = Math.max(0, Number(variant?.availableQuantity || 0));
                   const checked = Number(variantQuantities[variantId] || 0) > 0;
                   const selectedQty = Number(variantQuantities[variantId] || 1);
+                  const remainingWhenSelected = Math.max(0, variantAvailable - selectedQty);
 
                   return (
                     <div
@@ -448,13 +524,20 @@ const ProductDetail = () => {
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={variantAvailable < 1}
                           onChange={(event) => toggleVariantSelection(variantId, event.target.checked)}
                         />
-                        <span>{variant?.name || variantId}</span>
+                        <span>{formatVariantLabel(variant?.name || variantId)}</span>
                       </label>
                       <span className="variant-checkbox-price">
                         ₦{variantPrice.toLocaleString()}
                       </span>
+
+                      {!checked && (
+                        <span className="variant-availability-copy">
+                          {variantAvailable > 0 ? `${variantAvailable} available` : "Unavailable"}
+                        </span>
+                      )}
 
                       {checked && (
                         <div className="variant-qty-controls">
@@ -470,6 +553,7 @@ const ProductDetail = () => {
                           <input
                             type="number"
                             min="1"
+                            max={variantAvailable}
                             value={selectedQty}
                             onClick={(event) => event.stopPropagation()}
                             onChange={(event) => {
@@ -479,6 +563,7 @@ const ProductDetail = () => {
                           />
                           <button
                             type="button"
+                            disabled={selectedQty >= variantAvailable}
                             onClick={(event) => {
                               event.stopPropagation();
                               updateVariantQuantity(variantId, selectedQty + 1);
@@ -486,6 +571,9 @@ const ProductDetail = () => {
                           >
                             +
                           </button>
+                          <span className="variant-remaining-copy">
+                            {remainingWhenSelected} remaining
+                          </span>
                         </div>
                       )}
                     </div>
@@ -515,17 +603,23 @@ const ProductDetail = () => {
                   type="number"
                   value={quantity}
                   onChange={(e) =>
-                    setQuantity(Math.max(1, parseInt(e.target.value) || 1))
+                    setQuantity(Math.max(1, Math.min(productAvailableQuantity, parseInt(e.target.value, 10) || 1)))
                   }
                   min="1"
+                  max={productAvailableQuantity}
                 />
-                <button onClick={() => setQuantity(quantity + 1)}>+</button>
+                <button
+                  onClick={() => setQuantity(Math.min(productAvailableQuantity, quantity + 1))}
+                  disabled={quantity >= productAvailableQuantity}
+                >
+                  +
+                </button>
               </div>
             </div>
           )}
 
           <div className="product-actions">
-            <button className="btn-add-cart" onClick={handleAddToCart}>
+            <button className="btn-add-cart" onClick={handleAddToCart} disabled={product.listingType !== "group" && productAvailableQuantity < 1}>
               Add to Cart
             </button>
             <button
@@ -545,6 +639,22 @@ const ProductDetail = () => {
           </div>
         </div>
       </div>
+
+      {isMobilePreviewOpen && selectedImage && (
+        <div className="mobile-image-preview-overlay" role="dialog" aria-modal="true" onClick={() => setIsMobilePreviewOpen(false)}>
+          <button
+            type="button"
+            className="mobile-image-preview-close"
+            onClick={() => setIsMobilePreviewOpen(false)}
+            aria-label="Close image preview"
+          >
+            ×
+          </button>
+          <div className="mobile-image-preview-body" onClick={(event) => event.stopPropagation()}>
+            <img src={getProductImageUrl(selectedImage)} alt={detailTitle} />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

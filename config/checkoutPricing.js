@@ -1,0 +1,7 @@
+const CHECKOUT_SHIPPING_FEE_NGN = 0;
+const CHECKOUT_TAX_RATE = 0.025;
+
+module.exports = {
+  CHECKOUT_SHIPPING_FEE_NGN,
+  CHECKOUT_TAX_RATE,
+};

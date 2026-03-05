@@ -6,6 +6,7 @@ const initializeSocket = (token) => {
   if (socket) return socket;
 
   const socketUrl = process.env.REACT_APP_SERVER_URL || "https://www.ninohub.com";
+  // const socketUrl = process.env.REACT_APP_SERVER_URL || "http://localhost:5000";
   
   // Get or create session ID
   let sessionId = localStorage.getItem("sessionId");

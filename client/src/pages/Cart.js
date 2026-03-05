@@ -5,9 +5,22 @@ import { toast } from "sonner";
 import useCartSocket from "../hooks/useCartSocket";
 import { getProductImageUrl } from "../utils/image";
 import { markExpired } from "../redux/slices/cartSlice";
+import {
+  CHECKOUT_SHIPPING_FEE_NGN,
+  CHECKOUT_VAT_PERCENT_LABEL,
+} from "../config/checkoutPricing";
 import CartCountdown from "../components/CartCountdown";
 import { getSocket } from "../services/socket";
 import "./Cart.css";
+
+const formatVariantLabel = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const hyphenIndex = text.indexOf("-");
+  if (hyphenIndex < 0) return text;
+  const trimmed = text.slice(hyphenIndex + 1).trim();
+  return trimmed || text;
+};
 
 const Cart = () => {
   const dispatch = useDispatch();
@@ -76,6 +89,15 @@ const Cart = () => {
       return;
     }
     if (newQuantity > 0) {
+      const effectiveAvailable = resolveEffectiveAvailableForItem(item);
+      if (Number.isFinite(effectiveAvailable)) {
+        const maxAllowed = Number(item.quantity || 0) + effectiveAvailable;
+        if (newQuantity > maxAllowed) {
+          toast.error(`Only ${Math.max(0, maxAllowed)} available for this item`);
+          return;
+        }
+      }
+
       // Only emit WebSocket event - let socket response update Redux
       updateQuantitySocket(item.lineKey || item.id, newQuantity, item.productId, item.variantId || null);
     }
@@ -87,6 +109,26 @@ const Cart = () => {
     return Array.isArray(groupedProduct?.variants) ? groupedProduct.variants : [];
   };
 
+  const resolveEffectiveAvailableForItem = (item) => {
+    const listingId = String(item.listingId || item.parentGroupId || item.productId || "");
+    const product = products.find(
+      (entry) => String(entry.listingId || entry.id || "") === listingId
+    );
+
+    if (!product) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    if (item.variantId) {
+      const variant = (Array.isArray(product.variants) ? product.variants : []).find(
+        (entry) => String(entry?.variantId || entry?.id || "") === String(item.variantId || "")
+      );
+      return Math.max(0, Number(variant?.availableQuantity || 0));
+    }
+
+    return Math.max(0, Number(product?.availableQuantity || 0));
+  };
+
   const handleVariantChange = (item, nextVariantId) => {
     if (!nextVariantId) return;
     const options = resolveVariantOptions(item);
@@ -96,6 +138,12 @@ const Cart = () => {
 
     if (!nextVariant) {
       toast.error("Selected variant is unavailable");
+      return;
+    }
+
+    const nextVariantAvailable = Math.max(0, Number(nextVariant?.availableQuantity || 0));
+    if (nextVariantAvailable < Number(item.quantity || 0)) {
+      toast.error(`Only ${nextVariantAvailable} available for selected variant`);
       return;
     }
 
@@ -194,7 +242,7 @@ const Cart = () => {
                   <p className="item-category">Group: {item.groupName}</p>
                 )}
                 {item.variantName && (
-                  <p className="item-category">Variant: {item.variantName}</p>
+                  <p className="item-category">Variant: {formatVariantLabel(item.variantName)}</p>
                 )}
                 {item.groupName && resolveVariantOptions(item).length > 0 && (
                   <select
@@ -204,9 +252,10 @@ const Cart = () => {
                   >
                     {resolveVariantOptions(item).map((variant) => {
                       const value = String(variant?.variantId || variant?.id || "");
+                      const available = Math.max(0, Number(variant?.availableQuantity || 0));
                       return (
                         <option key={value} value={value}>
-                          {variant?.name || value}
+                          {`${formatVariantLabel(variant?.name || value)} (${available} available)`}
                         </option>
                       );
                     })}
@@ -228,7 +277,7 @@ const Cart = () => {
                 </button>
                 <span>{item.quantity}</span>
                 <button
-                  disabled={isExpired}
+                  disabled={isExpired || resolveEffectiveAvailableForItem(item) < 1}
                   onClick={() =>
                     handleQuantityChange(item, item.quantity + 1)
                   }
@@ -299,12 +348,12 @@ const Cart = () => {
 
           <div className="summary-row">
             <span>Shipping</span>
-            <span>Shipping fee will be communicated after order</span>
+            <span>Shipping fee will be communicated to you when your order is processed</span>
           </div>
 
           <div className="summary-row">
             <span>VAT</span>
-            <span>2.5% at checkout</span>
+            <span>{`${CHECKOUT_VAT_PERCENT_LABEL} at checkout`}</span>
           </div>
 
           <div className="summary-divider"></div>

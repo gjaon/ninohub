@@ -18,9 +18,15 @@ const ProductCard = ({ product }) => {
   const listingTitle = product.listingType === "group"
     ? (product.groupName || product.name)
     : product.name;
+  const remainingQuantity = Math.max(0, Number(product?.availableQuantity || 0));
 
   const handleAddToCart = (e) => {
     e.stopPropagation();
+    if (remainingQuantity < 1) {
+      toast.error("This product is currently unavailable");
+      return;
+    }
+
     if (product.listingType === "group" && Array.isArray(product.variants) && product.variants.length > 0) {
       navigate(`/products/${product.id}`, {
         state: { scrollToVariants: true },
@@ -68,6 +74,9 @@ const ProductCard = ({ product }) => {
         <h3>{listingTitle}</h3>
         <p className="product-card-category">{product.category}</p>
         <p className="product-card-description">{product.description}</p>
+        <p className="product-card-availability">
+          {remainingQuantity > 0 ? `${remainingQuantity} available` : "Out of stock"}
+        </p>
 
         <div className="product-card-footer">
           <div className="product-card-pricing">
@@ -78,7 +87,7 @@ const ProductCard = ({ product }) => {
               </span>
             )} */}
           </div>
-          <button className="add-to-cart-btn" onClick={handleAddToCart}>
+          <button className="add-to-cart-btn" onClick={handleAddToCart} disabled={remainingQuantity < 1}>
             Add to Cart
           </button>
         </div>

@@ -10,8 +10,36 @@ import {
   verifyMarketplaceCheckout,
 } from "../services/marketplace";
 import { getSocket } from "../services/socket";
+import {
+  CHECKOUT_SHIPPING_FEE_NGN,
+  CHECKOUT_TAX_RATE,
+  CHECKOUT_VAT_PERCENT_LABEL,
+} from "../config/checkoutPricing";
 import CartCountdown from "../components/CartCountdown";
 import "./Checkout.css";
+
+const toMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
+
+const computeCheckoutTotals = (subtotalAmount, options = {}) => {
+  const isPickup = String(options.fulfillmentMethod || "").toLowerCase() === "pickup";
+  const subtotal = toMoney(subtotalAmount);
+  const shipping = subtotal > 0 && !isPickup ? CHECKOUT_SHIPPING_FEE_NGN : 0;
+  const tax = toMoney(subtotal * CHECKOUT_TAX_RATE);
+  const total = toMoney(subtotal + shipping + tax);
+
+  return {
+    subtotal,
+    shipping,
+    tax,
+    total,
+  };
+};
+
+const formatNaira = (amount) =>
+  `₦${Number(amount || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}`;
 
 const Checkout = () => {
   const dispatch = useDispatch();
@@ -47,6 +75,10 @@ const Checkout = () => {
 
   const paymentReference = searchParams.get("reference") || searchParams.get("trxref");
   const verifyStatus = searchParams.get("verify") || searchParams.get("status");
+  const checkoutTotals = useMemo(
+    () => computeCheckoutTotals(totalAmount, { fulfillmentMethod }),
+    [totalAmount, fulfillmentMethod]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -286,7 +318,6 @@ const Checkout = () => {
       const response = await initializeMarketplaceCheckout(
         {
           shippingAddress,
-          amount: finalTotal,
           sessionId: localStorage.getItem("sessionId") || null,
         },
         idempotencyKey,
@@ -304,9 +335,6 @@ const Checkout = () => {
       setSubmitting(false);
     }
   };
-
-  const tax = totalAmount * 0.025;
-  const finalTotal = totalAmount + tax;
 
   if (items.length === 0 && !paymentReference) {
     navigate("/cart");
@@ -510,24 +538,24 @@ const Checkout = () => {
           <div className="summary-totals">
             <div className="summary-row">
               <span>Subtotal</span>
-              <span>₦{totalAmount.toLocaleString()}</span>
+              <span>{formatNaira(checkoutTotals.subtotal)}</span>
             </div>
             <div className="summary-row">
               <span>{fulfillmentMethod === "pickup" ? "Pickup" : "Shipping"}</span>
               <span>
                 {fulfillmentMethod === "pickup"
-                  ? "Pickup at store"
-                  : "Shipping fee will be communicated after order"}
+                  ? "₦0"
+                  : formatNaira(checkoutTotals.shipping)}
               </span>
             </div>
             <div className="summary-row">
-              <span>VAT (2.5%)</span>
-              <span>₦{tax.toLocaleString()}</span>
+              <span>{`VAT (${CHECKOUT_VAT_PERCENT_LABEL})`}</span>
+              <span>{formatNaira(checkoutTotals.tax)}</span>
             </div>
             <div className="summary-divider"></div>
             <div className="summary-row total">
               <span>Total</span>
-              <span>₦{finalTotal.toLocaleString()}</span>
+              <span>{formatNaira(checkoutTotals.total)}</span>
             </div>
           </div>
         </div>
