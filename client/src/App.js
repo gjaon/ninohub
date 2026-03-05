@@ -60,7 +60,6 @@ function App() {
 
   useEffect(() => {
     let didCancel = false;
-    let fallbackTimer = null;
 
     const loadProducts = async () => {
       dispatch(setLoading(true));
@@ -84,14 +83,11 @@ function App() {
     };
 
     if (!products.length) {
-      fallbackTimer = setTimeout(loadProducts, 1500);
+      loadProducts();
     }
 
     return () => {
       didCancel = true;
-      if (fallbackTimer) {
-        clearTimeout(fallbackTimer);
-      }
     };
   }, [dispatch, products.length]);
 

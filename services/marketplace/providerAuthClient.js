@@ -23,16 +23,108 @@ let sessionState = {
 
 let refreshInFlight = null;
 
+const parseTimestamp = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const asDate = new Date(value).getTime();
+  if (Number.isFinite(asDate) && asDate > 0) {
+    return asDate;
+  }
+
+  const asNumber = Number(value);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    return asNumber > 10_000_000_000 ? asNumber : asNumber * 1000;
+  }
+
+  return null;
+};
+
+const toPositiveSeconds = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+};
+
+const normalizeTokenPayload = (payload = {}) => {
+  const root = payload && typeof payload === "object" ? payload : {};
+  const nestedData = root.data && typeof root.data === "object" ? root.data : {};
+
+  const accessToken =
+    root.accessToken
+    || root.access_token
+    || nestedData.accessToken
+    || nestedData.access_token
+    || null;
+
+  const accessTokenExpiresIn =
+    toPositiveSeconds(root.accessTokenExpiresIn)
+    || toPositiveSeconds(root.expiresInSeconds)
+    || toPositiveSeconds(root.expires_in)
+    || toPositiveSeconds(nestedData.accessTokenExpiresIn)
+    || toPositiveSeconds(nestedData.expiresInSeconds)
+    || toPositiveSeconds(nestedData.expires_in)
+    || null;
+
+  const refreshToken =
+    root.refreshToken
+    || root.refresh_token
+    || nestedData.refreshToken
+    || nestedData.refresh_token
+    || null;
+
+  const refreshTokenExpiresAt =
+    parseTimestamp(root.refreshTokenExpiresAt)
+    || parseTimestamp(root.refresh_token_expires_at)
+    || parseTimestamp(nestedData.refreshTokenExpiresAt)
+    || parseTimestamp(nestedData.refresh_token_expires_at)
+    || null;
+
+  return {
+    accessToken,
+    accessTokenExpiresIn,
+    refreshToken,
+    refreshTokenExpiresAt,
+  };
+};
+
 const setSessionState = ({ accessToken, accessTokenExpiresIn, refreshToken, refreshTokenExpiresAt }) => {
   const now = toUnixMs();
+  const resolvedAccessTokenExpiresIn = toPositiveSeconds(accessTokenExpiresIn);
+  const resolvedRefreshTokenExpiresAt = parseTimestamp(refreshTokenExpiresAt);
 
   sessionState = {
     ...sessionState,
     accessToken: accessToken || sessionState.accessToken,
-    accessTokenExpiresAt: accessToken ? now + Number(accessTokenExpiresIn || 0) * 1000 : sessionState.accessTokenExpiresAt,
+    accessTokenExpiresAt:
+      accessToken && resolvedAccessTokenExpiresIn
+        ? now + resolvedAccessTokenExpiresIn * 1000
+        : sessionState.accessTokenExpiresAt,
     refreshToken: refreshToken || sessionState.refreshToken,
-    refreshTokenExpiresAt: refreshTokenExpiresAt ? new Date(refreshTokenExpiresAt).getTime() : sessionState.refreshTokenExpiresAt,
+    refreshTokenExpiresAt: resolvedRefreshTokenExpiresAt || sessionState.refreshTokenExpiresAt,
   };
+};
+
+const hasUsableRefreshToken = () => {
+  if (!sessionState.refreshToken) {
+    return false;
+  }
+
+  if (!sessionState.refreshTokenExpiresAt) {
+    return true;
+  }
+
+  const { integrationAuthClockSkewMs } = getMarketplaceConfig();
+  const now = toUnixMs();
+  return now + Number(integrationAuthClockSkewMs || 0) < sessionState.refreshTokenExpiresAt;
+};
+
+const canIssueTokenFromKeyPair = () => {
+  const { integrationKeyId, integrationKeySecret } = getMarketplaceConfig();
+  return Boolean(integrationKeyId && integrationKeySecret);
 };
 
 const getHttpClient = () => {
@@ -89,13 +181,12 @@ const issueAccessToken = async () => {
     },
   });
 
-  const payload = response.data || {};
-  setSessionState({
-    accessToken: payload.accessToken,
-    accessTokenExpiresIn: payload.accessTokenExpiresIn || payload.expiresInSeconds,
-    refreshToken: payload.refreshToken,
-    refreshTokenExpiresAt: payload.refreshTokenExpiresAt,
-  });
+  const normalizedPayload = normalizeTokenPayload(response.data || {});
+  if (!normalizedPayload.accessToken) {
+    throw new Error("Marketplace token response did not include access token");
+  }
+
+  setSessionState(normalizedPayload);
 
   return sessionState.accessToken;
 };
@@ -106,7 +197,20 @@ const refreshAccessToken = async () => {
     integrationSeedRefreshToken,
   } = getMarketplaceConfig();
 
-  const refreshToken = sessionState.refreshToken || integrationSeedRefreshToken;
+  const seededRefreshToken = integrationSeedRefreshToken || null;
+  if (!sessionState.refreshToken && seededRefreshToken) {
+    sessionState.refreshToken = seededRefreshToken;
+  }
+
+  if (!hasUsableRefreshToken()) {
+    if (canIssueTokenFromKeyPair()) {
+      return issueAccessToken();
+    }
+
+    throw new Error("Marketplace refresh token is unavailable or expired, and key-pair issuance is not configured");
+  }
+
+  const refreshToken = sessionState.refreshToken;
   if (!refreshToken) {
     return issueAccessToken();
   }
@@ -118,17 +222,19 @@ const refreshAccessToken = async () => {
       refreshToken,
     });
 
-    const payload = response.data || {};
-    setSessionState({
-      accessToken: payload.accessToken,
-      accessTokenExpiresIn: payload.accessTokenExpiresIn || payload.expiresInSeconds,
-      refreshToken: payload.refreshToken,
-      refreshTokenExpiresAt: payload.refreshTokenExpiresAt,
-    });
+    const normalizedPayload = normalizeTokenPayload(response.data || {});
+    if (!normalizedPayload.accessToken) {
+      throw new Error("Marketplace refresh response did not include access token");
+    }
+
+    setSessionState(normalizedPayload);
 
     return sessionState.accessToken;
   } catch (error) {
-    return issueAccessToken();
+    if (canIssueTokenFromKeyPair()) {
+      return issueAccessToken();
+    }
+    throw error;
   }
 };
 

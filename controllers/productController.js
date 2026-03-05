@@ -212,6 +212,15 @@ const toFrontendProduct = (product) => {
   };
 };
 
+const triggerProjectionRefreshInBackground = ({ trigger }) => {
+  syncInventoryProjectionIfStale({
+    trigger,
+    maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
+  }).catch((error) => {
+    console.warn("[products:projection-refresh] stale refresh skipped", error.message);
+  });
+};
+
 const getProducts = async (req, res) => {
   const useProviderProducts = shouldUseProviderProducts();
   if (!useProviderProducts) {
@@ -221,16 +230,14 @@ const getProducts = async (req, res) => {
 
   let projected = await getProjectedProducts();
 
-  await syncInventoryProjectionIfStale({
-    trigger: "on-demand-products-read-stale-refresh",
-    maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
-  }).catch((error) => {
-    console.warn("[products:getProducts] stale refresh skipped", error.message);
-  });
-  projected = await getProjectedProducts();
+  if (projected.length) {
+    triggerProjectionRefreshInBackground({ trigger: "on-demand-products-read-stale-refresh" });
+    const normalized = await applyEffectiveAvailability(projected.map(toFrontendProduct));
+    return res.status(200).json(normalized);
+  }
 
   if (!projected.length) {
-    await syncInventoryProjection({ trigger: "on-demand-products-read" });
+    await syncInventoryProjection({ trigger: "on-demand-products-read-cold-start" });
     projected = await getProjectedProducts();
   }
 
@@ -252,16 +259,13 @@ const getProductById = async (req, res) => {
 
   if (useProviderProducts) {
     let projected = await getProjectedProducts();
-    await syncInventoryProjectionIfStale({
-      trigger: "on-demand-product-detail-read-stale-refresh",
-      maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
-    }).catch((error) => {
-      console.warn("[products:getProductById] stale refresh skipped", error.message);
-    });
-    projected = await getProjectedProducts();
+
+    if (projected.length) {
+      triggerProjectionRefreshInBackground({ trigger: "on-demand-product-detail-read-stale-refresh" });
+    }
 
     if (!projected.length) {
-      await syncInventoryProjection({ trigger: "on-demand-product-detail-read" });
+      await syncInventoryProjection({ trigger: "on-demand-product-detail-read-cold-start" });
       projected = await getProjectedProducts();
     }
     source = projected.map(toFrontendProduct);

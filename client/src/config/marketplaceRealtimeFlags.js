@@ -9,6 +9,8 @@ const parseBoolean = (value) => {
   return null;
 };
 
+const realtimesync = true
+
 const isProduction = process.env.NODE_ENV === "production";
 const defaultEnabled = !isProduction;
 
@@ -18,8 +20,8 @@ const resolveFlag = (value, fallback = defaultEnabled) => {
 };
 
 export const marketplaceRealtimeFlags = {
-  reduxPersistEnabled: resolveFlag(process.env.REACT_APP_MARKETPLACE_REDUX_PERSIST_ENABLED),
-  realtimeSyncEnabled: resolveFlag(process.env.REACT_APP_MARKETPLACE_REALTIME_SYNC_ENABLED),
+  reduxPersistEnabled: true,
+  realtimeSyncEnabled: realtimesync,
 };
 
 export default marketplaceRealtimeFlags;

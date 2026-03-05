@@ -181,19 +181,17 @@ const loadProductsWithEffectiveAvailability = async ({ excludeCartId = null, ref
 
     let projected = await getProjectedProducts();
 
-    if (refreshIfStale) {
-      await syncInventoryProjectionIfStale({
+    if (refreshIfStale && projected.length) {
+      syncInventoryProjectionIfStale({
         trigger: "on-demand-socket-products-stale-refresh",
         maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
       }).catch((error) => {
         console.warn("[socket:products:sync] stale refresh skipped", error.message);
       });
-
-      projected = await getProjectedProducts();
     }
 
     if (!projected.length) {
-      await syncInventoryProjection({ trigger: "on-demand-socket-products-sync" });
+      await syncInventoryProjection({ trigger: "on-demand-socket-products-sync-cold-start" });
       projected = await getProjectedProducts();
     }
 
