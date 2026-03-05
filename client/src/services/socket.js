@@ -5,8 +5,8 @@ let socket = null;
 const initializeSocket = (token) => {
   if (socket) return socket;
 
-  // const socketUrl = process.env.REACT_APP_SERVER_URL || "https://www.ninohub.com";
-  const socketUrl = process.env.REACT_APP_SERVER_URL || "http://localhost:5001";
+  const socketUrl = process.env.REACT_APP_SERVER_URL || "https://www.ninohub.com";
+  // const socketUrl = process.env.REACT_APP_SERVER_URL || "http://localhost:5001";
   
   // Get or create session ID
   let sessionId = localStorage.getItem("sessionId");
