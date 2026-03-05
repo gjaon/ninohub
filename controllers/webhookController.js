@@ -183,6 +183,11 @@ const processPaystackDelivery = async (delivery) => {
 const processProviderDelivery = async (delivery) => {
   const { eventType, eventId, eventData, occurredAt, payload } = resolveProviderEventFields(delivery);
   const normalizedEventType = String(eventType || "").toLowerCase();
+  const eventLagMs = Math.max(0, Date.now() - occurredAt.getTime());
+
+  await recordMetric("marketplace.webhook.provider.event_lag", {
+    bucket: eventLagMs >= 180000 ? ">=180s" : eventLagMs >= 60000 ? "60s-179s" : "<60s",
+  });
 
   if (normalizedEventType === "marketplace.listing.updated") {
     const listingId = String(
@@ -242,8 +247,7 @@ const processProviderDelivery = async (delivery) => {
     || normalizeMarketplaceStatus(eventType.replace("marketplace.order.", ""));
 
   if (order && (inferredStatus || Array.isArray(eventData.lines))) {
-    const lagMs = Math.max(0, Date.now() - occurredAt.getTime());
-    const lagSeconds = Math.floor(lagMs / 1000);
+    const lagSeconds = Math.floor(eventLagMs / 1000);
 
     if (inferredStatus) {
       order.providerStatus = inferredStatus;

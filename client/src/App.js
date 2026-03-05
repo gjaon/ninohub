@@ -9,10 +9,16 @@ import { useDispatch, useSelector } from "react-redux";
 import { setProducts, setLoading, setError } from "./redux/slices/productsSlice";
 import { setUser } from "./redux/slices/userSlice";
 import { updateCartFromSocket } from "./redux/slices/cartSlice";
+import {
+  ingestMarketplaceEvent,
+  ingestMarketplaceEventsBatch,
+  setProductsSyncedAt,
+} from "./redux/slices/marketplaceSyncSlice";
 import { getUser } from "./services/auth";
 import { fetchProducts } from "./services/products";
 import { initializeSocket } from "./services/socket";
 import { syncMarketplaceEvents } from "./services/marketplace";
+import { marketplaceRealtimeFlags } from "./config/marketplaceRealtimeFlags";
 import { LaunchProvider } from "./context/LaunchContext";
 import Layout from "./components/Layout";
 import Home from "./pages/Home";
@@ -28,6 +34,7 @@ import TrackOrder from "./pages/TrackOrder";
 import ContactUs from "./pages/ContactUs";
 import Profile from "./pages/Profile";
 import WaitlistForm from "./pages/WaitlistForm";
+import AdminPanel from "./pages/AdminPanel";
 import "./App.css";
 
 // Scroll to top on route change
@@ -46,6 +53,7 @@ function App() {
   const dispatch = useDispatch();
   const { currentUser } = useSelector((state) => state.user);
   const products = useSelector((state) => state.products.items);
+  const marketplaceLastEventAt = useSelector((state) => state.marketplaceSync?.syncMeta?.lastEventAt);
   const hasSocketSyncedProductsRef = React.useRef(false);
   const lastSocketSyncAtRef = React.useRef(0);
   const pendingProductsResyncRef = React.useRef(null);
@@ -131,10 +139,13 @@ function App() {
 
     const syncMissedEvents = async () => {
       try {
-        const since = localStorage.getItem("marketplace:lastEventAt");
+        const since = marketplaceLastEventAt || localStorage.getItem("marketplace:lastEventAt");
         const response = await syncMarketplaceEvents(since || undefined);
         const events = response?.data || [];
         if (events.length) {
+          if (marketplaceRealtimeFlags.realtimeSyncEnabled) {
+            dispatch(ingestMarketplaceEventsBatch(events));
+          }
           localStorage.setItem(
             "marketplace:lastEventAt",
             new Date(events[events.length - 1].occurredAt).toISOString()
@@ -150,6 +161,10 @@ function App() {
     });
 
     socket.on("business:event", (eventEnvelope) => {
+      if (marketplaceRealtimeFlags.realtimeSyncEnabled) {
+        dispatch(ingestMarketplaceEvent(eventEnvelope));
+      }
+
       if (eventEnvelope?.occurredAt) {
         localStorage.setItem(
           "marketplace:lastEventAt",
@@ -192,6 +207,7 @@ function App() {
       hasSocketSyncedProductsRef.current = true;
       lastSocketSyncAtRef.current = latestPayloadSyncMs || Date.now();
       dispatch(setProducts(productsPayload));
+      dispatch(setProductsSyncedAt(new Date(lastSocketSyncAtRef.current).toISOString()));
       dispatch(setLoading(false));
     });
 
@@ -224,7 +240,7 @@ function App() {
         pendingProductsResyncRef.current = null;
       }
     };
-  }, [dispatch, currentUser?.token]);
+  }, [dispatch, currentUser?.token, marketplaceLastEventAt]);
 
   return (
     <LaunchProvider>
@@ -244,6 +260,7 @@ function App() {
             <Route path="/track-order" element={<TrackOrder />} />
             <Route path="/contact" element={<ContactUs />} />
             <Route path="/profile" element={<Profile />} />
+            <Route path="/admin" element={<AdminPanel />} />
             <Route path="/waitlist" element={<WaitlistForm />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

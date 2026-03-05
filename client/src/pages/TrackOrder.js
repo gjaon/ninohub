@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { fetchUserOrders, trackOrder } from "../services/orders";
@@ -9,10 +9,17 @@ import {
   syncMarketplaceEvents,
 } from "../services/marketplace";
 import { getSocket } from "../services/socket";
+import {
+  ingestMarketplaceEvent,
+  ingestMarketplaceEventsBatch,
+  replaceMarketplaceOrders,
+} from "../redux/slices/marketplaceSyncSlice";
 import "./TrackOrder.css";
 
 const TrackOrder = () => {
+  const dispatch = useDispatch();
   const { isAuthenticated } = useSelector((state) => state.user);
+  const marketplaceLastEventAt = useSelector((state) => state.marketplaceSync?.syncMeta?.lastEventAt);
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
   const orderFromUrl = queryParams.get("order");
@@ -114,6 +121,7 @@ const TrackOrder = () => {
       try {
         const enriched = await loadOrdersWithFallback();
         setUserOrders(enriched);
+        dispatch(replaceMarketplaceOrders(enriched));
 
         if (trackingOrderNumberRef.current) {
           const refreshedCurrent = enriched.find(
@@ -151,6 +159,8 @@ const TrackOrder = () => {
           eventType.startsWith("marketplace.order.") ||
           eventType === "marketplace.provider.event";
 
+        dispatch(ingestMarketplaceEvent(eventEnvelope));
+
         if (!isOrderRealtimeEvent) {
           return;
         }
@@ -160,10 +170,11 @@ const TrackOrder = () => {
 
       socket?.on("business:event", onBusinessEvent);
 
-      syncMarketplaceEvents(localStorage.getItem("marketplace:lastEventAt") || undefined)
+      syncMarketplaceEvents(marketplaceLastEventAt || localStorage.getItem("marketplace:lastEventAt") || undefined)
         .then(async (eventSync) => {
           const events = eventSync?.data || [];
           if (events.length) {
+            dispatch(ingestMarketplaceEventsBatch(events));
             localStorage.setItem(
               "marketplace:lastEventAt",
               new Date(events[events.length - 1].occurredAt).toISOString()
@@ -177,7 +188,7 @@ const TrackOrder = () => {
         socket?.off("business:event", onBusinessEvent);
       };
     }
-  }, [isAuthenticated, refreshOrders]);
+  }, [dispatch, isAuthenticated, marketplaceLastEventAt, refreshOrders]);
 
   React.useEffect(() => {
     if (orderFromUrl && isAuthenticated) {

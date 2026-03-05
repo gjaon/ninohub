@@ -3,6 +3,7 @@ const User = require("../models/userModel");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { migrateSessionCart } = require("./cartController");
+const { isAdminEmail } = require("../utils/adminAccess");
 
 const generateAccessToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
@@ -88,6 +89,7 @@ const registerUser = asyncHandler(async (req, res) => {
       photo: photo || null,
       phone: phone || "",
       bio: bio || "",
+      isAdmin: isAdminEmail(email),
       token: accessToken,
     });
   } else {
@@ -141,6 +143,7 @@ const loginUser = asyncHandler(async (req, res) => {
       photo: photo || null,
       phone: phone || "",
       bio: bio || "",
+      isAdmin: isAdminEmail(email),
       token: accessToken,
     };
     res.status(200).json(responseData);
@@ -194,6 +197,7 @@ const getUser = asyncHandler(async (req, res) => {
       photo: photo || null,
       phone: phone || "",
       bio: bio || "",
+      isAdmin: isAdminEmail(email),
     });
   } else {
     res.status(400);

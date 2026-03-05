@@ -15,6 +15,14 @@ const Navbar = () => {
   } = useSelector((state) => state.cart);
   const cartItemCount = (items?.length || 0) + (customizations?.length || 0);
   const { isAuthenticated, currentUser } = useSelector((state) => state.user);
+  const adminEmails = String(process.env.REACT_APP_ADMIN_EMAIL_ALLOWLIST || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+  const isAdmin =
+    isAuthenticated &&
+    (Boolean(currentUser?.isAdmin) ||
+      adminEmails.includes(String(currentUser?.email || "").toLowerCase()));
   const isCountdownActive =
     cartItemCount > 0 &&
     !isExpired &&
@@ -80,15 +88,24 @@ const Navbar = () => {
             <Link to="/track-order">Track Order</Link>
           </li>
           {isAuthenticated ? (
-            <li>
-              <Link
-                to="/profile"
-                onClick={closeMobileMenu}
-                className="user-info-link"
-              >
-                {currentUser?.name || "User"}
-              </Link>
-            </li>
+            <>
+              {isAdmin && (
+                <li>
+                  <Link to="/admin" onClick={closeMobileMenu}>
+                    Admin
+                  </Link>
+                </li>
+              )}
+              <li>
+                <Link
+                  to="/profile"
+                  onClick={closeMobileMenu}
+                  className="user-info-link"
+                >
+                  {currentUser?.name || "User"}
+                </Link>
+              </li>
+            </>
           ) : (
             <li>
               <Link to="/login" onClick={closeMobileMenu}>

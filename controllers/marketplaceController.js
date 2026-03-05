@@ -34,6 +34,8 @@ const {
 } = require("../services/marketplace/inventoryProjectionService");
 const { publishEvent } = require("../services/marketplace/businessEventBus");
 const { recordMetric, getMetrics } = require("../services/marketplace/metricsService");
+const CheckoutFallback = require("../models/checkoutFallbackModel");
+const { createOrUpdateFallback } = require("../services/marketplace/checkoutFallbackService");
 
 const mapCartItemsToProvider = (items = []) =>
   items.map((item, index) => ({
@@ -373,6 +375,55 @@ const resolveCheckoutCart = async ({ buyerId, sessionId }) => {
   return chosenCart;
 };
 
+const maybePersistCheckoutFallback = async ({
+  hold,
+  reference,
+  buyerId,
+  buyerEmail,
+  buyerName,
+  resolvedShippingAddress,
+  providerLineResolution,
+  verification,
+  error,
+}) => {
+  const config = getMarketplaceConfig();
+  if (!config.checkoutFallbackEnabled) {
+    return null;
+  }
+
+  return createOrUpdateFallback({
+    hold,
+    paymentReference: reference,
+    buyer: {
+      id: String(buyerId || hold?.buyerId || ""),
+      email: buyerEmail || "",
+      name: buyerName || "",
+      phone: resolvedShippingAddress?.phone || "",
+    },
+    payment: {
+      reference,
+      status: verification?.status || hold?.paymentStatus || "verified",
+      amount: Number(verification?.amount || Math.round(Number(hold?.amount || 0) * 100)) / 100,
+      amountMinor: Number(verification?.amount || 0),
+      currency: hold?.currency || "NGN",
+      verifiedAt: new Date(),
+    },
+    shippingAddress: resolvedShippingAddress || hold?.shippingAddress || {},
+    lineItems: hold?.items || [],
+    orderIntentSnapshot: {
+      providerLines: providerLineResolution?.resolvedLines || [],
+      unresolvedItems: providerLineResolution?.unresolved || [],
+      holdItems: hold?.items || [],
+    },
+    providerError: {
+      message: error?.message || "provider_submission_failed",
+      statusCode: error?.statusCode || error?.status || null,
+      details: error?.details || null,
+      payload: error?.payload || null,
+    },
+  });
+};
+
 const syncLegacyOrderFromMarketplace = async ({
   marketplaceOrder,
   hold,
@@ -584,6 +635,24 @@ const finalizeMarketplaceCheckoutByReference = async ({
   let createdProviderOrder;
   const providerLineResolution = await resolveProviderLinesFromHoldItems(hold.items || []);
   if (!providerLineResolution.resolvedLines.length || providerLineResolution.unresolved.length) {
+    await maybePersistCheckoutFallback({
+      hold,
+      reference,
+      buyerId,
+      buyerEmail,
+      buyerName,
+      resolvedShippingAddress,
+      providerLineResolution,
+      verification,
+      error: {
+        message: "Unable to map checkout items to valid marketplace listings",
+        statusCode: 422,
+        details: {
+          unresolvedItems: providerLineResolution.unresolved,
+        },
+      },
+    });
+
     const error = new Error("Unable to map checkout items to valid marketplace listings");
     error.statusCode = 422;
     error.details = {
@@ -606,6 +675,18 @@ const finalizeMarketplaceCheckoutByReference = async ({
       lineMetadata: hold.items,
     });
   } catch (error) {
+    await maybePersistCheckoutFallback({
+      hold,
+      reference,
+      buyerId,
+      buyerEmail,
+      buyerName,
+      resolvedShippingAddress,
+      providerLineResolution,
+      verification,
+      error,
+    });
+
     await recordMetric("marketplace.provider.order_create_failed", {
       buyerId: String(buyerId),
       source,
@@ -629,6 +710,21 @@ const finalizeMarketplaceCheckoutByReference = async ({
   }
 
   if (!createdProviderOrder?._id) {
+    await maybePersistCheckoutFallback({
+      hold,
+      reference,
+      buyerId,
+      buyerEmail,
+      buyerName,
+      resolvedShippingAddress,
+      providerLineResolution,
+      verification,
+      error: {
+        message: "Marketplace provider order creation failed",
+        statusCode: 502,
+      },
+    });
+
     await recordMetric("marketplace.provider.order_create_failed", {
       buyerId: String(buyerId),
       source,
@@ -756,6 +852,31 @@ const finalizeMarketplaceCheckoutByReference = async ({
     buyerEmail,
     buyerName,
   });
+
+  await CheckoutFallback.updateMany(
+    {
+      paymentReference: reference,
+      status: { $nin: ["resolved_manual", "resolved_retry"] },
+    },
+    {
+      $set: {
+        status: "resolved_retry",
+        resolvedOrderId: order.orderId,
+        "retryMeta.inFlight": false,
+        "retryMeta.lastSuccessAt": new Date(),
+      },
+      $push: {
+        history: {
+          action: "auto_resolved_after_successful_finalize",
+          occurredAt: new Date(),
+          metadata: {
+            orderId: order.orderId,
+            source,
+          },
+        },
+      },
+    }
+  );
 
   await publishEvent({
     eventType: "marketplace.order.payment_confirmed",

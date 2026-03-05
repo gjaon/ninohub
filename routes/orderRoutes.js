@@ -11,6 +11,8 @@ const {
   cancelOrder,
 } = require("../controllers/orderController");
 const protect = require("../middleware/authMiddleware");
+const { requireAdmin } = require("../middleware/adminMiddleware");
+const { requireFlag } = require("../middleware/featureFlags");
 
 // Route to initialize payment with PayStack
 router.post("/initialize-payment", protect, initializePayment);
@@ -31,7 +33,7 @@ router.post("/user-orders", protect, getUserOrders);
 router.post("/track", trackOrderByNumber);
 
 // Route to update order status (admin)
-router.put("/update-status/:orderId", protect, updateOrderStatus);
+router.put("/update-status/:orderId", requireFlag("adminModuleEnabled"), protect, requireAdmin, updateOrderStatus);
 
 // Route to cancel order
 router.post("/cancel/:orderId", protect, cancelOrder);

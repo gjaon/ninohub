@@ -25,6 +25,7 @@ const orderRoute = require("./routes/orderRoutes");
 const productRoute = require("./routes/productRoutes");
 const marketplaceRoute = require("./routes/marketplaceRoutes");
 const webhookRoute = require("./routes/webhookRoutes");
+const adminRoute = require("./routes/adminRoutes");
 const errorHandler = require("./middleware/errorMiddleware");
 const { subscribe } = require("./services/marketplace/businessEventBus");
 const { syncInventoryProjection } = require("./services/marketplace/inventoryProjectionService");
@@ -35,6 +36,12 @@ const {
   markRetryOrExhausted,
 } = require("./services/marketplace/webhookDeliveryService");
 const { reconcileMarketplaceOrders } = require("./services/marketplace/reconciliationService");
+const { recordMetric } = require("./services/marketplace/metricsService");
+const {
+  evaluateWebhookHealth,
+  buildPollingProfile,
+} = require("./services/marketplace/adaptivePollingService");
+const { createEventDedupeCache } = require("./services/marketplace/eventDedupeCache");
 
 const {
   toMonetaryNumber,
@@ -53,6 +60,7 @@ const app = express();
 const httpServer = http.createServer(app);
 
 const marketplaceConfig = getMarketplaceConfig();
+const eventDedupeCache = createEventDedupeCache();
 
 // Middlewares
 app.use(
@@ -758,11 +766,115 @@ io.on("connection", (socket) => {
 app.locals.io = io;
 
 subscribe((eventEnvelope) => {
+  if (marketplaceConfig.realtimeEventDedupeEnabled && eventEnvelope?.eventId) {
+    if (eventDedupeCache.has(eventEnvelope.eventId)) {
+      recordMetric("marketplace.realtime.event_deduped", {
+        eventType: String(eventEnvelope?.eventType || "unknown"),
+      }).catch(() => null);
+      return;
+    }
+    eventDedupeCache.add(eventEnvelope.eventId);
+  }
+
   io.emit("business:event", eventEnvelope);
   if (eventEnvelope.buyerId) {
     io.to(`buyer:${eventEnvelope.buyerId}`).emit("business:event", eventEnvelope);
   }
 });
+
+const startAdaptiveReconciliationWorker = ({ io, marketplaceConfig }) => {
+  const run = async () => {
+    let nextDelayMs = 60000;
+
+    try {
+      const now = new Date();
+      const windowStart = new Date(now.getTime() - 10 * 60 * 1000);
+      const deliveries = await MarketplaceWebhookDelivery.find({
+        provider: "provider",
+        createdAt: { $gte: windowStart },
+      })
+        .select("status createdAt processedAt")
+        .sort({ createdAt: -1 })
+        .limit(200)
+        .lean();
+
+      const processed = deliveries.filter((delivery) => delivery.status === "processed");
+      const retryingCount = deliveries.filter((delivery) => delivery.status === "retrying").length;
+      const exhaustedCount = deliveries.filter((delivery) => delivery.status === "exhausted").length;
+
+      const latestProcessedAt = processed[0]?.processedAt || processed[0]?.createdAt || null;
+      const latestProcessedAgeMs = latestProcessedAt ? Math.max(0, Date.now() - new Date(latestProcessedAt).getTime()) : Number.MAX_SAFE_INTEGER;
+
+      const avgLagMs = processed.length
+        ? Math.round(
+            processed.reduce((sum, delivery) => {
+              const createdAt = new Date(delivery.createdAt).getTime();
+              const processedAt = new Date(delivery.processedAt || delivery.createdAt).getTime();
+              return sum + Math.max(0, processedAt - createdAt);
+            }, 0) / processed.length
+          )
+        : Number.MAX_SAFE_INTEGER;
+
+      const health = evaluateWebhookHealth({
+        latestProcessedAgeMs,
+        retryingCount,
+        exhaustedCount,
+        avgLagMs,
+        degradedLagMsThreshold: marketplaceConfig.adaptivePollingDegradedLagMsThreshold,
+        unhealthyLagMsThreshold: marketplaceConfig.adaptivePollingUnhealthyLagMsThreshold,
+      });
+
+      const profile = buildPollingProfile({
+        health,
+        healthyIntervalMs: marketplaceConfig.adaptivePollingHealthyIntervalMs,
+        degradedIntervalMs: marketplaceConfig.adaptivePollingDegradedIntervalMs,
+        unhealthyIntervalMs: marketplaceConfig.adaptivePollingUnhealthyIntervalMs,
+      });
+
+      nextDelayMs = profile.pollIntervalMs;
+
+      await recordMetric("marketplace.polling.activation", {
+        fallbackActive: profile.fallbackActive ? "yes" : "no",
+        reason: profile.reason,
+        health,
+      });
+      await recordMetric("marketplace.webhook.event_lag_bucket", {
+        bucket: avgLagMs >= 180000 ? ">=180s" : avgLagMs >= 60000 ? "60s-179s" : "<60s",
+      });
+
+      io.emit("business:event", {
+        eventId: uuidv4(),
+        eventType: "marketplace.polling.mode.changed",
+        occurredAt: new Date().toISOString(),
+        source: "marketplace.adaptive-polling",
+        correlationId: null,
+        payloadVersion: "1.0",
+        payload: {
+          fallbackActive: profile.fallbackActive,
+          reason: profile.reason,
+          pollIntervalMs: profile.pollIntervalMs,
+          health,
+        },
+        buyerId: null,
+      });
+
+      if (profile.fallbackActive) {
+        const result = await reconcileMarketplaceOrders({ limit: 50 });
+        if (result.reconciled > 0) {
+          console.info("Marketplace adaptive reconciliation corrected orders", result);
+        }
+      }
+    } catch (error) {
+      nextDelayMs = marketplaceConfig.adaptivePollingDegradedIntervalMs;
+      console.error("Marketplace adaptive reconciliation worker failed:", error.message);
+      await recordMetric("marketplace.polling.worker_failed");
+    } finally {
+      setTimeout(run, Math.max(5000, nextDelayMs));
+    }
+  };
+
+  run();
+};
 
 // Start cleanup interval for expired cart reservations (every 30 seconds)
 const { cleanupExpiredReservations } = require("./utils/cartReservation");
@@ -854,16 +966,20 @@ if (marketplaceConfig.webhooksEnabled) {
     }
   }, 15000);
 
-  setInterval(async () => {
-    try {
-      const result = await reconcileMarketplaceOrders({ limit: 50 });
-      if (result.reconciled > 0) {
-        console.info("Marketplace reconciliation corrected orders", result);
+  if (marketplaceConfig.adaptivePollingEnabled) {
+    startAdaptiveReconciliationWorker({ io, marketplaceConfig });
+  } else {
+    setInterval(async () => {
+      try {
+        const result = await reconcileMarketplaceOrders({ limit: 50 });
+        if (result.reconciled > 0) {
+          console.info("Marketplace reconciliation corrected orders", result);
+        }
+      } catch (error) {
+        console.error("Marketplace reconciliation worker failed:", error.message);
       }
-    } catch (error) {
-      console.error("Marketplace reconciliation worker failed:", error.message);
-    }
-  }, 60000);
+    }, 60000);
+  }
 }
 
 // Routes Middleware
@@ -874,6 +990,7 @@ app.use("/api/orders", orderRoute);
 app.use("/api/products", productRoute);
 app.use("/api/marketplace", marketplaceRoute);
 app.use("/api/webhooks", webhookRoute);
+app.use("/api/admin", adminRoute);
 
 // Routes
 app.get("/api", (req, res) => {
@@ -901,7 +1018,7 @@ if (
 app.use(errorHandler);
 
 // Connect to DB and start server
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {

@@ -5,6 +5,10 @@ const assert = (condition, message) => {
 };
 
 const parseBooleanFlag = (value) => String(value).toLowerCase() === "true";
+const parseOptionalBoolean = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  return parseBooleanFlag(value);
+};
 
 const parseList = (value) =>
   (value || "")
@@ -41,9 +45,18 @@ const normalizeIntegrationPath = ({ basePath, candidatePath, fallbackPath }) => 
 };
 
 const getMarketplaceConfig = () => {
+  const isProduction = process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+  const defaultSafeRollout = !isProduction;
   const publicApiEnabled = parseBooleanFlag(process.env.MARKETPLACE_PUBLIC_API_ENABLED);
   const webhooksEnabled = parseBooleanFlag(process.env.MARKETPLACE_WEBHOOKS_ENABLED);
   const internalUiEnabled = parseBooleanFlag(process.env.MARKETPLACE_INTERNAL_UI_ENABLED);
+  const adaptivePollingEnabled =
+    parseOptionalBoolean(process.env.MARKETPLACE_ADAPTIVE_POLLING_ENABLED) ?? defaultSafeRollout;
+  const realtimeEventDedupeEnabled =
+    parseOptionalBoolean(process.env.MARKETPLACE_REALTIME_EVENT_DEDUPE_ENABLED) ?? defaultSafeRollout;
+  const adminModuleEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MODULE_ENABLED) ?? false;
+  const checkoutFallbackEnabled = parseOptionalBoolean(process.env.MARKETPLACE_CHECKOUT_FALLBACK_ENABLED) ?? false;
+  const adminMessagingEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MESSAGING_ENABLED) ?? false;
   const paystackMode = (process.env.PAYSTACK_MODE || "test").trim().toLowerCase();
 
   assert(["test", "live"].includes(paystackMode), "PAYSTACK_MODE must be either 'test' or 'live'");
@@ -183,6 +196,16 @@ const getMarketplaceConfig = () => {
     providerWebhookInboundPath: (process.env.MARKETPLACE_WEBHOOK_INBOUND_PATH || "/api/webhooks/marketplace").trim(),
     providerWebhookRegistrationEnabled: parseBooleanFlag(process.env.MARKETPLACE_PROVIDER_WEBHOOK_REGISTRATION_ENABLED),
     providerWebhookSecretRotateDays: Number(process.env.MARKETPLACE_PROVIDER_WEBHOOK_SECRET_ROTATE_DAYS || 30),
+    adminModuleEnabled,
+    checkoutFallbackEnabled,
+    adminMessagingEnabled,
+    adaptivePollingEnabled,
+    realtimeEventDedupeEnabled,
+    adaptivePollingHealthyIntervalMs: Number(process.env.MARKETPLACE_ADAPTIVE_POLLING_HEALTHY_INTERVAL_MS || 300000),
+    adaptivePollingDegradedIntervalMs: Number(process.env.MARKETPLACE_ADAPTIVE_POLLING_DEGRADED_INTERVAL_MS || 60000),
+    adaptivePollingUnhealthyIntervalMs: Number(process.env.MARKETPLACE_ADAPTIVE_POLLING_UNHEALTHY_INTERVAL_MS || 15000),
+    adaptivePollingDegradedLagMsThreshold: Number(process.env.MARKETPLACE_ADAPTIVE_POLLING_DEGRADED_LAG_MS || 60000),
+    adaptivePollingUnhealthyLagMsThreshold: Number(process.env.MARKETPLACE_ADAPTIVE_POLLING_UNHEALTHY_LAG_MS || 180000),
   };
 };
 
