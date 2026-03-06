@@ -1,5 +1,6 @@
 const Coupon = require("../../models/couponModel");
 const Waitlist = require("../../models/waitlistModel");
+const User = require("../../models/userModel");
 
 const toMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
 
@@ -67,9 +68,19 @@ const ensureCouponEligibility = async ({ coupon, buyerId, email, phone }) => {
   }
 
   if (coupon.assignedToType === "waitlist") {
+    let userIdentityEmail = "";
+    let userIdentityPhone = "";
+    if (buyerIdStr) {
+      const user = await User.findById(buyerIdStr).select("email phone").lean();
+      userIdentityEmail = String(user?.email || "").trim().toLowerCase();
+      userIdentityPhone = normalizePhone(user?.phone);
+    }
+
     const directIdentityMatch =
       (assignedEmail && normalizedEmail && assignedEmail === normalizedEmail)
       || (assignedPhone && normalizedPhone && assignedPhone === normalizedPhone)
+      || (assignedEmail && userIdentityEmail && assignedEmail === userIdentityEmail)
+      || (assignedPhone && userIdentityPhone && assignedPhone === userIdentityPhone)
       || (assignedRefStr && buyerIdStr && assignedRefStr === buyerIdStr);
 
     if (directIdentityMatch) {
@@ -83,7 +94,9 @@ const ensureCouponEligibility = async ({ coupon, buyerId, email, phone }) => {
 
       const waitlistMatch =
         (waitlistEmail && normalizedEmail && waitlistEmail === normalizedEmail)
-        || (waitlistPhone && normalizedPhone && waitlistPhone === normalizedPhone);
+        || (waitlistPhone && normalizedPhone && waitlistPhone === normalizedPhone)
+        || (waitlistEmail && userIdentityEmail && waitlistEmail === userIdentityEmail)
+        || (waitlistPhone && userIdentityPhone && waitlistPhone === userIdentityPhone);
 
       if (waitlistMatch) {
         return;

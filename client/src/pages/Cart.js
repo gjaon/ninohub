@@ -36,6 +36,8 @@ const Cart = () => {
   } = useSelector((state) => state.cart);
   const products = useSelector((state) => state.products.items || []);
   const { addToCartSocket, removeFromCartSocket, updateQuantitySocket, updateVariantSocket } = useCartSocket();
+  const [isReadding, setIsReadding] = React.useState(false);
+  const [isOpeningCheckout, setIsOpeningCheckout] = React.useState(false);
 
   useEffect(() => {
     const socket = getSocket();
@@ -163,30 +165,86 @@ const Cart = () => {
       toast.error("Your reservation expired. Re-add items to checkout.");
       return;
     }
+
+    setIsOpeningCheckout(true);
     navigate("/checkout");
   };
 
-  const handleReAddAll = () => {
-    items.forEach((item) => {
-      addToCartSocket(
-        {
-          id: item.productId,
-          listingId: item.listingId || item.parentGroupId || item.productId,
-          name: item.name,
-          price: item.price,
-          image: item.image,
-          selectedImage: item.selectedImage || item.image,
-          variantId: item.variantId || null,
-          variantName: item.variantName || null,
-          parentGroupId: item.parentGroupId || null,
-          groupName: item.groupName || null,
-          originalPrice: item.originalPrice || item.basePrice || item.price,
-          discountPercent: item.intrinsicDiscountPercent || 0,
-        },
-        item.quantity
+  const handleReAddAll = async () => {
+    if (isReadding || items.length === 0) {
+      return;
+    }
+
+    setIsReadding(true);
+
+    const results = await Promise.all(
+      items.map(
+        (item) =>
+          new Promise((resolve) => {
+            let resolved = false;
+            const timeout = setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                resolve({ ok: false, itemName: item.name, reason: "timeout" });
+              }
+            }, 8000);
+
+            const sent = addToCartSocket(
+              {
+                id: item.productId,
+                listingId: item.listingId || item.parentGroupId || item.productId,
+                name: item.name,
+                price: item.price,
+                image: item.image,
+                selectedImage: item.selectedImage || item.image,
+                variantId: item.variantId || null,
+                variantName: item.variantName || null,
+                parentGroupId: item.parentGroupId || null,
+                groupName: item.groupName || null,
+                originalPrice: item.originalPrice || item.basePrice || item.price,
+                discountPercent: item.intrinsicDiscountPercent || 0,
+              },
+              item.quantity,
+              (response = {}) => {
+                if (resolved) {
+                  return;
+                }
+
+                clearTimeout(timeout);
+                resolved = true;
+                resolve({
+                  ok: Boolean(response.ok),
+                  itemName: item.name,
+                  reason: response.message || null,
+                });
+              }
+            );
+
+            if (!sent && !resolved) {
+              clearTimeout(timeout);
+              resolved = true;
+              resolve({
+                ok: false,
+                itemName: item.name,
+                reason: "connection_unavailable",
+              });
+            }
+          })
+      )
+    );
+
+    const successCount = results.filter((result) => result.ok).length;
+    const failedCount = results.length - successCount;
+
+    if (failedCount === 0) {
+      toast.success(`Re-added ${successCount} item${successCount === 1 ? "" : "s"} to cart.`);
+    } else {
+      toast.warning(
+        `Re-add completed: ${successCount} succeeded, ${failedCount} failed. Please retry failed items.`
       );
-    });
-    toast.success("Re-reserving your items...");
+    }
+
+    setIsReadding(false);
   };
 
   if (items.length === 0) {
@@ -364,13 +422,17 @@ const Cart = () => {
           </div>
 
           {isExpired && (
-            <button className="readd-btn" onClick={handleReAddAll}>
-              Re-add Items
+            <button className="readd-btn" onClick={handleReAddAll} disabled={isReadding}>
+              {isReadding ? "Re-adding..." : "Re-add Items"}
             </button>
           )}
 
-          <button className="checkout-btn" onClick={handleCheckout} disabled={isExpired}>
-            Proceed to Checkout
+          <button
+            className="checkout-btn"
+            onClick={handleCheckout}
+            disabled={isExpired || isOpeningCheckout}
+          >
+            {isOpeningCheckout ? "Opening checkout..." : "Proceed to Checkout"}
           </button>
 
           <button

@@ -30,8 +30,6 @@ const Products = () => {
   const endIndex = startIndex + itemsPerPage;
   const currentProducts = filteredItems.slice(startIndex, endIndex);
 
-  console.log({ currentProducts, startIndex, endIndex, currentPage, totalPages });
-
   // Reset to page 1 when filters change
   React.useEffect(() => {
     setCurrentPage(1);
@@ -161,14 +159,14 @@ const Products = () => {
             onChange={handleSearch}
           />
         </div>
-        <button
+        {/* <button
           type="button"
           className="refresh-listings-btn"
           onClick={handleRefreshListings}
           disabled={isRefreshing}
         >
           {isRefreshing ? "Refreshing..." : "Refresh"}
-        </button>
+        </button> */}
       </div>
 
       <div className="category-filters-container">

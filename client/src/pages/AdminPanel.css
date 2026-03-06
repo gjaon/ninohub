@@ -4,13 +4,37 @@
   padding: 24px 16px;
 }
 
+.admin-page h1,
+.admin-page h2,
+.admin-page h3,
+.admin-page h4 {
+  margin: 0;
+}
+
+.admin-page h1 {
+  margin-bottom: 14px;
+}
+
 .admin-tabs {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.admin-tabs button {
+  border: 1px solid #d7dbe2;
+  background: #f8fafc;
+  color: #1f2937;
+  border-radius: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
 }
 
 .admin-tabs button.active {
+  background: #111827;
+  color: #ffffff;
+  border-color: #111827;
   font-weight: 700;
 }
 
@@ -27,6 +51,57 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  background: #ffffff;
+}
+
+.admin-card input,
+.admin-card select,
+.admin-card textarea,
+.admin-card button {
+  font: inherit;
+}
+
+.admin-card input,
+.admin-card select,
+.admin-card textarea {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+  color: #111827;
+}
+
+.admin-card textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.admin-card input:focus,
+.admin-card select:focus,
+.admin-card textarea:focus {
+  border-color: #111827;
+  outline: none;
+}
+
+.admin-card button {
+  border: 1px solid #111827;
+  background: #111827;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+.admin-card button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.admin-btn-secondary {
+  border: 1px solid #d1d5db !important;
+  background: #f8fafc !important;
+  color: #111827 !important;
 }
 
 .admin-filters {
@@ -51,12 +126,26 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  background: #ffffff;
+  cursor: pointer;
 }
 
 .admin-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.admin-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-actions input[type="checkbox"],
+.admin-actions input[type="radio"] {
+  width: auto;
 }
 
 .admin-table {
@@ -73,17 +162,25 @@
   gap: 8px;
   align-items: center;
   border-bottom: 1px solid #f0f0f0;
-  padding-bottom: 6px;
+  padding: 8px 0;
 }
 
 .admin-error {
   color: #a80000;
   margin-bottom: 10px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  border-radius: 8px;
+  padding: 10px;
 }
 
 .admin-success {
   color: #166534;
   margin-bottom: 10px;
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  border-radius: 8px;
+  padding: 10px;
 }
 
 .admin-span-2 {
@@ -91,7 +188,11 @@
 }
 
 .admin-row-coupon {
-  grid-template-columns: 1.3fr 1fr 1fr 1fr auto;
+  grid-template-columns: 36px 1.2fr 1fr 1fr 1fr auto;
+}
+
+.admin-row-coupon input[type="checkbox"] {
+  width: auto;
 }
 
 .admin-badge {
@@ -145,6 +246,11 @@
   border: 1px solid #eee;
   padding: 10px;
   border-radius: 6px;
+}
+
+.admin-helper-text {
+  color: #4b5563;
+  font-size: 13px;
 }
 
 @media (max-width: 900px) {

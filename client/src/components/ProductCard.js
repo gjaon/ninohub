@@ -9,6 +9,7 @@ import "./ProductCard.css";
 const ProductCard = ({ product }) => {
   const navigate = useNavigate();
   const { addToCartSocket } = useCartSocket();
+  const [isAdding, setIsAdding] = React.useState(false);
   const displayImage =
     product.primaryImage
     || product.selectedImage
@@ -22,6 +23,10 @@ const ProductCard = ({ product }) => {
 
   const handleAddToCart = (e) => {
     e.stopPropagation();
+    if (isAdding) {
+      return;
+    }
+
     if (remainingQuantity < 1) {
       toast.error("This product is currently unavailable");
       return;
@@ -34,8 +39,15 @@ const ProductCard = ({ product }) => {
       toast.info("Please select a variant before adding to cart");
       return;
     }
-    // Only emit to socket - let socket response update Redux
+    setIsAdding(true);
+    const failSafeTimer = setTimeout(() => {
+      setIsAdding(false);
+    }, 8000);
+
     const sent = addToCartSocket(product, 1, (result) => {
+      clearTimeout(failSafeTimer);
+      setIsAdding(false);
+
       if (result?.ok) {
         toast.success("Product added to cart!");
         return;
@@ -46,6 +58,9 @@ const ProductCard = ({ product }) => {
     if (sent) {
       return;
     }
+
+    clearTimeout(failSafeTimer);
+    setIsAdding(false);
     toast.error("Unable to add product to cart. Please try again.");
   };
 
@@ -87,8 +102,12 @@ const ProductCard = ({ product }) => {
               </span>
             )} */}
           </div>
-          <button className="add-to-cart-btn" onClick={handleAddToCart} disabled={remainingQuantity < 1}>
-            Add to Cart
+          <button
+            className="add-to-cart-btn"
+            onClick={handleAddToCart}
+            disabled={remainingQuantity < 1 || isAdding}
+          >
+            {isAdding ? "Adding..." : "Add to Cart"}
           </button>
         </div>
       </div>

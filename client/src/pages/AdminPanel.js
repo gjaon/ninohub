@@ -87,7 +87,7 @@ const AdminPanel = () => {
   const [couponLoading, setCouponLoading] = useState(false);
 
   const [waitlistCouponForm, setWaitlistCouponForm] = useState({
-    status: "pending",
+    status: "",
     search: "",
     discountType: "amount",
     discountValue: "2000",
@@ -108,6 +108,8 @@ const AdminPanel = () => {
     name: "Waitlist Coupon SMS",
     smsBody: "Hi {{firstName}}, your code is {{couponCode}} for {{discountText}}. Expires {{expiryDate}}.",
   });
+  const [couponSendMode, setCouponSendMode] = useState("all");
+  const [selectedCouponCodes, setSelectedCouponCodes] = useState([]);
   const [adminSuccess, setAdminSuccess] = useState("");
 
   const loadFallbacks = useCallback(async () => {
@@ -183,6 +185,18 @@ const AdminPanel = () => {
     loadCampaignLogs();
     loadCoupons();
   }, [isAdmin, loadFallbacks, loadUsers, loadWaitlist, loadCampaignLogs, loadCoupons]);
+
+  useEffect(() => {
+    setSelectedCouponCodes((previous) => {
+      if (!previous.length) {
+        return previous;
+      }
+
+      const activeCodes = new Set(coupons.map((coupon) => coupon.code));
+      const filtered = previous.filter((code) => activeCodes.has(code));
+      return filtered.length === previous.length ? previous : filtered;
+    });
+  }, [coupons]);
 
   if (!isAuthenticated || !isAdmin) {
     return (
@@ -275,6 +289,28 @@ const AdminPanel = () => {
     }
   };
 
+  const onGenerateAllWaitlistCoupons = async () => {
+    setLoading(true);
+    setError("");
+    setAdminSuccess("");
+    try {
+      const response = await generateWaitlistCoupons({
+        ...waitlistCouponForm,
+        status: "",
+        search: "",
+        dryRun: false,
+        discountValue: Number(waitlistCouponForm.discountValue),
+      });
+      setAdminSuccess(response.message || "Coupons generated for all waitlist members");
+      await loadCoupons();
+      await loadWaitlist();
+    } catch (err) {
+      setError(err.message || "Failed to auto-generate waitlist coupons");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const onGenerateUserCoupons = async (event) => {
     event.preventDefault();
     setLoading(true);
@@ -313,6 +349,15 @@ const AdminPanel = () => {
 
   const onSendCouponSms = async (event) => {
     event.preventDefault();
+    const normalizedSelectedCodes = selectedCouponCodes
+      .map((code) => String(code || "").trim().toUpperCase())
+      .filter(Boolean);
+
+    if (couponSendMode === "selected" && normalizedSelectedCodes.length === 0) {
+      setError("Select at least one coupon or switch to all active coupons.");
+      return;
+    }
+
     setLoading(true);
     setError("");
     setAdminSuccess("");
@@ -322,9 +367,13 @@ const AdminPanel = () => {
         template: {
           smsBody: couponSmsPayload.smsBody,
         },
-        filters: {
-          status: "active",
-        },
+        ...(couponSendMode === "selected"
+          ? { couponCodes: normalizedSelectedCodes }
+          : {
+              filters: {
+                status: "active",
+              },
+            }),
       });
       setAdminSuccess(response.message || "Coupon SMS sent");
       await loadCampaignLogs();
@@ -333,6 +382,27 @@ const AdminPanel = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const onToggleCouponCode = (code) => {
+    setSelectedCouponCodes((previous) => {
+      if (previous.includes(code)) {
+        return previous.filter((value) => value !== code);
+      }
+      return [...previous, code];
+    });
+  };
+
+  const onSelectAllActiveCoupons = () => {
+    setSelectedCouponCodes(
+      coupons
+        .filter((coupon) => coupon.status === "active")
+        .map((coupon) => coupon.code)
+    );
+  };
+
+  const onClearCouponSelection = () => {
+    setSelectedCouponCodes([]);
   };
 
   return (
@@ -353,6 +423,14 @@ const AdminPanel = () => {
         <div className="admin-grid">
           <form className="admin-card" onSubmit={onGenerateWaitlistCoupons}>
             <h3>Generate for Waitlist</h3>
+            <button
+              type="button"
+              className="admin-btn-secondary"
+              disabled={loading}
+              onClick={onGenerateAllWaitlistCoupons}
+            >
+              Auto-generate for all waitlist members
+            </button>
             <select
               value={waitlistCouponForm.status}
               onChange={(e) => setWaitlistCouponForm((prev) => ({ ...prev, status: e.target.value }))}
@@ -444,6 +522,15 @@ const AdminPanel = () => {
 
           <div className="admin-card admin-span-2">
             <h3>Coupons</h3>
+            <div className="admin-actions">
+              <button type="button" onClick={onSelectAllActiveCoupons} disabled={couponLoading || loading}>
+                Select all active
+              </button>
+              <button type="button" onClick={onClearCouponSelection} disabled={loading}>
+                Clear selection
+              </button>
+              <span className="admin-helper-text">Selected: {selectedCouponCodes.length}</span>
+            </div>
             <div className="admin-filters">
               <input
                 placeholder="Search code"
@@ -475,6 +562,14 @@ const AdminPanel = () => {
             <div className="admin-table">
               {coupons.map((coupon) => (
                 <div key={coupon._id} className="admin-row admin-row-coupon">
+                  <span>
+                    <input
+                      type="checkbox"
+                      checked={selectedCouponCodes.includes(coupon.code)}
+                      onChange={() => onToggleCouponCode(coupon.code)}
+                      disabled={loading}
+                    />
+                  </span>
                   <span>{coupon.code}</span>
                   <span>
                     <span className={`admin-badge admin-badge-${coupon.status}`}>{coupon.status}</span>
@@ -495,6 +590,28 @@ const AdminPanel = () => {
 
           <form className="admin-card admin-span-2" onSubmit={onSendCouponSms}>
             <h3>Send Coupon SMS (Termii)</h3>
+            <div className="admin-actions">
+              <label>
+                <input
+                  type="radio"
+                  name="couponSendMode"
+                  value="all"
+                  checked={couponSendMode === "all"}
+                  onChange={() => setCouponSendMode("all")}
+                />
+                Send to all active coupons
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="couponSendMode"
+                  value="selected"
+                  checked={couponSendMode === "selected"}
+                  onChange={() => setCouponSendMode("selected")}
+                />
+                Send to selected coupons ({selectedCouponCodes.length})
+              </label>
+            </div>
             <input
               placeholder="Campaign name"
               value={couponSmsPayload.name}
