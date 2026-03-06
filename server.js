@@ -28,7 +28,10 @@ const webhookRoute = require("./routes/webhookRoutes");
 const adminRoute = require("./routes/adminRoutes");
 const errorHandler = require("./middleware/errorMiddleware");
 const { subscribe } = require("./services/marketplace/businessEventBus");
-const { syncInventoryProjection } = require("./services/marketplace/inventoryProjectionService");
+const {
+  syncInventoryProjection,
+  syncInventoryProjectionIfStale,
+} = require("./services/marketplace/inventoryProjectionService");
 const MarketplaceWebhookDelivery = require("./models/marketplaceWebhookDeliveryModel");
 const {
   markProcessing,
@@ -186,6 +189,9 @@ const loadProductsWithEffectiveAvailability = async ({
     let projected = await getProjectedProducts();
 
     if (refreshIfStale && projected.length) {
+      recordMetric("marketplace.inventory.sync.trigger", {
+        source: "socket-stale-refresh",
+      }).catch(() => null);
       syncInventoryProjectionIfStale({
         trigger: "on-demand-socket-products-stale-refresh",
         maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
@@ -195,8 +201,17 @@ const loadProductsWithEffectiveAvailability = async ({
     }
 
     if (!projected.length) {
+      recordMetric("marketplace.products.read.path", {
+        source: "socket-products-sync",
+        cachePath: "cold-start-sync",
+      }).catch(() => null);
       await syncInventoryProjection({ trigger: "on-demand-socket-products-sync-cold-start" });
       projected = await getProjectedProducts();
+    } else {
+      recordMetric("marketplace.products.read.path", {
+        source: "socket-products-sync",
+        cachePath: "cache-hit",
+      }).catch(() => null);
     }
 
     if (!projected.length) {
@@ -900,7 +915,13 @@ setInterval(async () => {
 if (marketplaceConfig.internalUiEnabled) {
   setInterval(async () => {
     try {
-      await syncInventoryProjection({ trigger: "scheduled-refresh" });
+      await recordMetric("marketplace.inventory.sync.trigger", {
+        source: "scheduled-refresh",
+      });
+      await syncInventoryProjectionIfStale({
+        trigger: "scheduled-refresh",
+        maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
+      });
     } catch (error) {
       console.error("Scheduled marketplace sync failed:", error.message);
     }

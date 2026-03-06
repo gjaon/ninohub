@@ -2,8 +2,37 @@ const { v4: uuidv4 } = require("uuid");
 const MarketplaceProductCache = require("../../models/marketplaceProductCacheModel");
 const providerClient = require("./providerClient");
 const { publishEvent } = require("./businessEventBus");
+const { recordMetric } = require("./metricsService");
 
 let lastSuccessfulSyncAt = 0;
+let syncInFlight = null;
+let syncFailureState = {
+  consecutiveFailures: 0,
+  cooldownUntil: 0,
+  lastFailureAt: 0,
+  lastFailureReason: null,
+};
+
+const getSyncConfig = () => ({
+  failureThreshold: Math.max(1, Number(process.env.MARKETPLACE_SYNC_FAILURE_THRESHOLD || 3)),
+  cooldownMs: Math.max(0, Number(process.env.MARKETPLACE_SYNC_COOLDOWN_MS || 45000)),
+});
+
+const getInFlightState = () => ({
+  inFlight: Boolean(syncInFlight),
+  lastSuccessfulSyncAt,
+  consecutiveFailures: syncFailureState.consecutiveFailures,
+  cooldownUntil: syncFailureState.cooldownUntil,
+  lastFailureAt: syncFailureState.lastFailureAt,
+  lastFailureReason: syncFailureState.lastFailureReason,
+});
+
+const recordSyncMetricSafe = async (key, labels = {}, increment = 1) => {
+  try {
+    await recordMetric(key, labels, increment);
+  } catch (_error) {
+  }
+};
 
 const toFiniteNumber = (value, fallback = 0) => {
   const candidate = typeof value === "string" ? value.replace(/,/g, "").trim() : value;
@@ -403,11 +432,19 @@ const mapProviderProducts = (item) => {
   return mapped ? [mapped] : [];
 };
 
-const syncInventoryProjection = async ({ trigger = "manual", correlationId } = {}) => {
+const runProjectionSync = async ({ trigger = "manual", correlationId } = {}) => {
   const nextCorrelationId = correlationId || uuidv4();
+  const startedAt = Date.now();
+
   console.info("[marketplace:inventory-sync] started", {
     trigger,
     correlationId: nextCorrelationId,
+    inFlight: true,
+    source: trigger,
+  });
+  recordSyncMetricSafe("marketplace.inventory.sync.started", {
+    source: String(trigger || "unknown"),
+    mode: "leader",
   });
 
   const fetchedInventory = await providerClient.fetchInventory();
@@ -417,6 +454,7 @@ const syncInventoryProjection = async ({ trigger = "manual", correlationId } = {
     trigger,
     correlationId: nextCorrelationId,
     providerCount: providerInventory.length,
+    inFlight: true,
   });
 
   let syncedCount = 0;
@@ -492,6 +530,12 @@ const syncInventoryProjection = async ({ trigger = "manual", correlationId } = {
     fetchedCount: providerInventory.length,
     syncedCount,
     skippedCount,
+    inFlight: true,
+    durationMs: Math.max(0, Date.now() - startedAt),
+  });
+  recordSyncMetricSafe("marketplace.inventory.sync.completed", {
+    source: String(trigger || "unknown"),
+    result: "success",
   });
 
   lastSuccessfulSyncAt = Date.now();
@@ -501,6 +545,102 @@ const syncInventoryProjection = async ({ trigger = "manual", correlationId } = {
     syncedCount,
     skippedCount,
   };
+};
+
+const syncInventoryProjection = async ({ trigger = "manual", correlationId, force = false } = {}) => {
+  const nextCorrelationId = correlationId || uuidv4();
+  const now = Date.now();
+  const { failureThreshold, cooldownMs } = getSyncConfig();
+
+  if (syncInFlight) {
+    console.info("[marketplace:inventory-sync] join in-flight run", {
+      trigger,
+      correlationId: nextCorrelationId,
+      inFlight: true,
+      source: trigger,
+    });
+    recordSyncMetricSafe("marketplace.inventory.sync.joined_inflight", {
+      source: String(trigger || "unknown"),
+    });
+    return syncInFlight;
+  }
+
+  const coolingDown =
+    !force
+    && syncFailureState.cooldownUntil
+    && now < syncFailureState.cooldownUntil
+    && syncFailureState.consecutiveFailures >= failureThreshold;
+
+  if (coolingDown) {
+    const waitMs = Math.max(0, syncFailureState.cooldownUntil - now);
+    console.warn("[marketplace:inventory-sync] blocked by cooldown", {
+      trigger,
+      correlationId: nextCorrelationId,
+      inFlight: false,
+      source: trigger,
+      consecutiveFailures: syncFailureState.consecutiveFailures,
+      cooldownUntil: syncFailureState.cooldownUntil,
+      retryAfterMs: waitMs,
+    });
+    recordSyncMetricSafe("marketplace.inventory.sync.cooldown_blocked", {
+      source: String(trigger || "unknown"),
+    });
+    const error = new Error("Inventory sync temporarily paused after repeated upstream failures");
+    error.status = 503;
+    error.code = "INVENTORY_SYNC_COOLDOWN";
+    error.nonRetryable = true;
+    error.details = {
+      retryAfterMs: waitMs,
+      consecutiveFailures: syncFailureState.consecutiveFailures,
+      cooldownUntil: syncFailureState.cooldownUntil,
+      reason: syncFailureState.lastFailureReason,
+    };
+    throw error;
+  }
+
+  syncInFlight = (async () => {
+    try {
+      const result = await runProjectionSync({
+        trigger,
+        correlationId: nextCorrelationId,
+      });
+      syncFailureState = {
+        consecutiveFailures: 0,
+        cooldownUntil: 0,
+        lastFailureAt: 0,
+        lastFailureReason: null,
+      };
+      return result;
+    } catch (error) {
+      const nextFailures = syncFailureState.consecutiveFailures + 1;
+      const shouldCooldown = nextFailures >= failureThreshold;
+      const cooldownUntil = shouldCooldown ? Date.now() + cooldownMs : 0;
+      syncFailureState = {
+        consecutiveFailures: nextFailures,
+        cooldownUntil,
+        lastFailureAt: Date.now(),
+        lastFailureReason: error?.code || error?.message || "unknown",
+      };
+      console.warn("[marketplace:inventory-sync] failed", {
+        trigger,
+        correlationId: nextCorrelationId,
+        source: trigger,
+        inFlight: true,
+        consecutiveFailures: nextFailures,
+        cooldownUntil,
+        message: error?.message,
+      });
+      recordSyncMetricSafe("marketplace.inventory.sync.completed", {
+        source: String(trigger || "unknown"),
+        result: "failed",
+      });
+      throw error;
+    } finally {
+      syncInFlight = null;
+    }
+  })();
+
+  return syncInFlight;
 };
 
 const upsertMappedProducts = async ({ mappedItems = [] }) => {
@@ -583,7 +723,26 @@ const syncInventoryProjectionIfStale = async ({
   correlationId,
 } = {}) => {
   const now = Date.now();
+
+  if (syncInFlight) {
+    console.info("[marketplace:inventory-sync] stale-check joined in-flight run", {
+      trigger,
+      correlationId,
+      inFlight: true,
+      source: trigger,
+    });
+    recordSyncMetricSafe("marketplace.inventory.sync.stale_check", {
+      source: String(trigger || "unknown"),
+      decision: "join-inflight",
+    });
+    return syncInFlight;
+  }
+
   if (lastSuccessfulSyncAt && now - lastSuccessfulSyncAt < Number(maxAgeMs || 0)) {
+    recordSyncMetricSafe("marketplace.inventory.sync.stale_check", {
+      source: String(trigger || "unknown"),
+      decision: "fresh-cache",
+    });
     return {
       skipped: true,
       reason: "fresh-cache",
@@ -591,6 +750,10 @@ const syncInventoryProjectionIfStale = async ({
     };
   }
 
+  recordSyncMetricSafe("marketplace.inventory.sync.stale_check", {
+    source: String(trigger || "unknown"),
+    decision: "sync",
+  });
   return syncInventoryProjection({ trigger, correlationId });
 };
 
@@ -730,5 +893,6 @@ module.exports = {
     consolidateProjectedRows,
     normalizeDiscountSnapshot,
     mapProviderProducts,
+    getInFlightState,
   },
 };

@@ -951,6 +951,10 @@ const getPublicInventory = asyncHandler(async (req, res) => {
 });
 
 const triggerInventorySync = asyncHandler(async (req, res) => {
+  await recordMetric("marketplace.inventory.sync.trigger", {
+    source: "internal-endpoint",
+  });
+
   const result = await syncInventoryProjection({
     trigger: "internal-endpoint",
     correlationId: req.get("x-correlation-id") || uuidv4(),

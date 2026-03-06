@@ -5,6 +5,7 @@ const {
   syncInventoryProjection,
   syncInventoryProjectionIfStale,
 } = require("../services/marketplace/inventoryProjectionService");
+const { recordMetric } = require("../services/marketplace/metricsService");
 const { applyEffectiveAvailability } = require("../utils/productAvailability");
 
 const toSafeString = (value) => {
@@ -221,9 +222,20 @@ const triggerProjectionRefreshInBackground = ({ trigger }) => {
   });
 };
 
+const recordReadMetricSafe = async (key, labels = {}) => {
+  try {
+    await recordMetric(key, labels);
+  } catch (_error) {
+  }
+};
+
 const getProducts = async (req, res) => {
   const useProviderProducts = shouldUseProviderProducts();
   if (!useProviderProducts) {
+    recordReadMetricSafe("marketplace.products.read.path", {
+      source: "http-get-products",
+      cachePath: "local-fallback",
+    });
     const normalized = await applyEffectiveAvailability(products.map(toFrontendProduct));
     return res.status(200).json(normalized);
   }
@@ -231,12 +243,27 @@ const getProducts = async (req, res) => {
   let projected = await getProjectedProducts();
 
   if (projected.length) {
+    recordReadMetricSafe("marketplace.products.read.path", {
+      source: "http-get-products",
+      cachePath: "cache-hit-stale-refresh",
+    });
+    console.info("[marketplace:products-read] cache-hit", {
+      source: "http-get-products",
+      cachedCount: projected.length,
+    });
     triggerProjectionRefreshInBackground({ trigger: "on-demand-products-read-stale-refresh" });
     const normalized = await applyEffectiveAvailability(projected.map(toFrontendProduct));
     return res.status(200).json(normalized);
   }
 
   if (!projected.length) {
+    recordReadMetricSafe("marketplace.products.read.path", {
+      source: "http-get-products",
+      cachePath: "cold-start-sync",
+    });
+    console.info("[marketplace:products-read] cold-start-sync", {
+      source: "http-get-products",
+    });
     await syncInventoryProjection({ trigger: "on-demand-products-read-cold-start" });
     projected = await getProjectedProducts();
   }
@@ -261,10 +288,18 @@ const getProductById = async (req, res) => {
     let projected = await getProjectedProducts();
 
     if (projected.length) {
+      recordReadMetricSafe("marketplace.products.read.path", {
+        source: "http-get-product-by-id",
+        cachePath: "cache-hit-stale-refresh",
+      });
       triggerProjectionRefreshInBackground({ trigger: "on-demand-product-detail-read-stale-refresh" });
     }
 
     if (!projected.length) {
+      recordReadMetricSafe("marketplace.products.read.path", {
+        source: "http-get-product-by-id",
+        cachePath: "cold-start-sync",
+      });
       await syncInventoryProjection({ trigger: "on-demand-product-detail-read-cold-start" });
       projected = await getProjectedProducts();
     }

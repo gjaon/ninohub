@@ -5,6 +5,14 @@ const {
   getProviderAccessToken,
   invalidateProviderAccessToken,
 } = require("./providerAuthClient");
+const { recordMetric } = require("./metricsService");
+
+let inventoryFailureCircuit = {
+  consecutiveFailures: 0,
+  cooldownUntil: 0,
+  lastFailureAt: 0,
+  lastFailureReason: null,
+};
 
 const joinUrl = (base, path) => `${String(base || "").replace(/\/+$/g, "")}${String(path || "").startsWith("/") ? path : `/${path}`}`;
 
@@ -81,6 +89,7 @@ const getClient = async ({ forceRefresh = false } = {}) => {
   const {
     integrationBaseUrl,
     integrationBasePath,
+    providerRequestTimeoutMs,
   } = getMarketplaceConfig();
 
   if (!integrationBaseUrl) {
@@ -91,7 +100,7 @@ const getClient = async ({ forceRefresh = false } = {}) => {
 
   return axios.create({
     baseURL: joinUrl(integrationBaseUrl, integrationBasePath),
-    timeout: 15000,
+    timeout: providerRequestTimeoutMs,
     headers: {
       Authorization: authorizationHeader || undefined,
       "Content-Type": "application/json",
@@ -99,25 +108,110 @@ const getClient = async ({ forceRefresh = false } = {}) => {
   });
 };
 
-const requestWithRetry = async (requestFn) => {
+const recordProviderMetricSafe = async (key, labels = {}, increment = 1) => {
+  try {
+    await recordMetric(key, labels, increment);
+  } catch (_error) {
+  }
+};
+
+const requestWithRetry = async (requestFn, options = {}) => {
+  const {
+    providerRequestRetries,
+    providerRetryBaseDelayMs,
+    providerMaxTotalRequestTimeMs,
+  } = getMarketplaceConfig();
+
+  const retries = Math.max(1, Number(options.retries ?? providerRequestRetries));
+  const baseDelayMs = Math.max(0, Number(options.baseDelayMs ?? providerRetryBaseDelayMs));
+  const maxTotalMs = Math.max(1, Number(options.maxTotalMs ?? providerMaxTotalRequestTimeMs));
+  const requestLabel = String(options.requestLabel || "provider-request");
+  const startedAt = Date.now();
+
   return withRetries(async () => {
+    const elapsedBeforeAttemptMs = Date.now() - startedAt;
+    if (elapsedBeforeAttemptMs >= maxTotalMs) {
+      const timedOutError = {
+        status: 504,
+        code: "PROVIDER_RETRY_BUDGET_EXHAUSTED",
+        message: "Provider request exceeded total retry budget",
+        details: {
+          requestLabel,
+          elapsedMs: elapsedBeforeAttemptMs,
+          maxTotalMs,
+        },
+        nonRetryable: true,
+      };
+      throw timedOutError;
+    }
+
+    const attemptStartedAt = Date.now();
     try {
       const client = await getClient();
-      return await requestFn(client);
+      const response = await requestFn(client);
+      const attemptDurationMs = Math.max(0, Date.now() - attemptStartedAt);
+      recordProviderMetricSafe("marketplace.provider.request.attempt", {
+        request: requestLabel,
+        outcome: "success",
+      });
+      console.info("[marketplace:provider:request] attempt", {
+        request: requestLabel,
+        outcome: "success",
+        durationMs: attemptDurationMs,
+      });
+      return response;
     } catch (error) {
+      const attemptDurationMs = Math.max(0, Date.now() - attemptStartedAt);
       if (error?.status && error?.code) {
+        recordProviderMetricSafe("marketplace.provider.request.attempt", {
+          request: requestLabel,
+          outcome: "failed",
+          code: String(error.code || "unknown"),
+        });
+        console.warn("[marketplace:provider:request] attempt", {
+          request: requestLabel,
+          outcome: "failed",
+          code: error?.code,
+          status: error?.status,
+          durationMs: attemptDurationMs,
+          message: error?.message,
+        });
         throw error;
       }
 
       if (error.response?.status === 401) {
         invalidateProviderAccessToken();
         const retryClient = await getClient({ forceRefresh: true });
-        return requestFn(retryClient);
+        const response = await requestFn(retryClient);
+        recordProviderMetricSafe("marketplace.provider.request.attempt", {
+          request: requestLabel,
+          outcome: "success-after-refresh",
+        });
+        console.info("[marketplace:provider:request] attempt", {
+          request: requestLabel,
+          outcome: "success-after-refresh",
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        });
+        return response;
       }
 
-      throw mapProviderError(error);
+      const mapped = mapProviderError(error);
+      recordProviderMetricSafe("marketplace.provider.request.attempt", {
+        request: requestLabel,
+        outcome: "failed",
+        code: String(mapped?.code || "unknown"),
+      });
+      console.warn("[marketplace:provider:request] attempt", {
+        request: requestLabel,
+        outcome: "failed",
+        code: mapped?.code,
+        status: mapped?.status,
+        durationMs: attemptDurationMs,
+        message: mapped?.message,
+      });
+      throw mapped;
     }
-  }, { retries: 3, baseDelayMs: 300 });
+  }, { retries, baseDelayMs });
 };
 
 const normalizeInventoryPayload = (payload) => {
@@ -148,18 +242,63 @@ const normalizeInventoryPayload = (payload) => {
 };
 
 const fetchInventory = async () => {
-  const { providerInventoryPaths, integrationListingsPath } = getMarketplaceConfig();
-  const candidatePaths = [integrationListingsPath, ...providerInventoryPaths].filter(Boolean);
+  const {
+    providerInventoryPaths,
+    integrationListingsPath,
+    providerFallbackProbeEnabled,
+    providerInventoryFailureThreshold,
+    providerInventoryFailureCooldownMs,
+  } = getMarketplaceConfig();
+
+  const now = Date.now();
+  if (
+    inventoryFailureCircuit.consecutiveFailures >= providerInventoryFailureThreshold
+    && now < inventoryFailureCircuit.cooldownUntil
+  ) {
+    const blockedMs = Math.max(0, inventoryFailureCircuit.cooldownUntil - now);
+    recordProviderMetricSafe("marketplace.provider.inventory.circuit_blocked", {
+      reason: String(inventoryFailureCircuit.lastFailureReason || "unknown"),
+    });
+    throw {
+      status: 503,
+      code: "PROVIDER_INVENTORY_CIRCUIT_OPEN",
+      message: "Provider inventory fetch temporarily paused after repeated failures",
+      details: {
+        retryAfterMs: blockedMs,
+        consecutiveFailures: inventoryFailureCircuit.consecutiveFailures,
+        cooldownUntil: inventoryFailureCircuit.cooldownUntil,
+      },
+      nonRetryable: true,
+    };
+  }
+
+  const candidatePaths = providerFallbackProbeEnabled
+    ? [integrationListingsPath, ...providerInventoryPaths].filter(Boolean)
+    : [integrationListingsPath].filter(Boolean);
   const uniquePaths = [...new Set(candidatePaths)];
   const attemptedPaths = [];
   let lastError = null;
 
   for (const endpointPath of uniquePaths) {
+    const attemptStartedAt = Date.now();
     attemptedPaths.push(endpointPath);
+    recordProviderMetricSafe("marketplace.provider.inventory.fallback_attempt", {
+      endpointPath,
+      fallbackMode: providerFallbackProbeEnabled ? "enabled" : "disabled",
+    });
 
     try {
-      const response = await requestWithRetry((client) => client.get(endpointPath));
+      const response = await requestWithRetry(
+        (client) => client.get(endpointPath),
+        { requestLabel: `inventory:${endpointPath}` }
+      );
       const payload = response.data;
+
+      console.info("[marketplace:provider:inventory-path-attempt]", {
+        endpointPath,
+        durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        outcome: "success",
+      });
 
       console.info("[marketplace:provider:raw-products]", {
         endpointPath,
@@ -168,6 +307,12 @@ const fetchInventory = async () => {
 
       const normalized = normalizeInventoryPayload(payload);
       if (normalized) {
+        inventoryFailureCircuit = {
+          consecutiveFailures: 0,
+          cooldownUntil: 0,
+          lastFailureAt: 0,
+          lastFailureReason: null,
+        };
         return normalized;
       }
 
@@ -183,13 +328,38 @@ const fetchInventory = async () => {
       };
       continue;
     } catch (error) {
+      console.warn("[marketplace:provider:inventory-path-attempt]", {
+        endpointPath,
+        durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        outcome: "failed",
+        status: error?.status,
+        code: error?.code,
+        message: error?.message,
+      });
       lastError = error;
       if (error.status === 404) {
         continue;
       }
+      const nextFailures = inventoryFailureCircuit.consecutiveFailures + 1;
+      const shouldCooldown = nextFailures >= providerInventoryFailureThreshold;
+      inventoryFailureCircuit = {
+        consecutiveFailures: nextFailures,
+        cooldownUntil: shouldCooldown ? Date.now() + providerInventoryFailureCooldownMs : 0,
+        lastFailureAt: Date.now(),
+        lastFailureReason: error?.code || error?.message || "unknown",
+      };
       throw error;
     }
   }
+
+  const nextFailures = inventoryFailureCircuit.consecutiveFailures + 1;
+  const shouldCooldown = nextFailures >= providerInventoryFailureThreshold;
+  inventoryFailureCircuit = {
+    consecutiveFailures: nextFailures,
+    cooldownUntil: shouldCooldown ? Date.now() + providerInventoryFailureCooldownMs : 0,
+    lastFailureAt: Date.now(),
+    lastFailureReason: lastError?.code || lastError?.message || "not-found",
+  };
 
   throw {
     ...(lastError || {}),
@@ -211,15 +381,18 @@ const fetchProviderListingById = async ({ listingId }) => {
     return null;
   }
 
-  const { providerInventoryPaths, integrationListingsPath } = getMarketplaceConfig();
-  const candidatePaths = [integrationListingsPath, ...providerInventoryPaths].filter(Boolean);
+  const { providerInventoryPaths, integrationListingsPath, providerFallbackProbeEnabled } = getMarketplaceConfig();
+  const candidatePaths = providerFallbackProbeEnabled
+    ? [integrationListingsPath, ...providerInventoryPaths].filter(Boolean)
+    : [integrationListingsPath].filter(Boolean);
   const uniquePaths = [...new Set(candidatePaths)];
 
   let lastError = null;
   for (const endpointPath of uniquePaths) {
     try {
-      const response = await requestWithRetry((client) =>
-        client.get(`${endpointPath}/${encodeURIComponent(normalizedListingId)}`)
+      const response = await requestWithRetry(
+        (client) => client.get(`${endpointPath}/${encodeURIComponent(normalizedListingId)}`),
+        { requestLabel: `listing:${endpointPath}` }
       );
       const payload = response?.data || {};
       const listing = normalizeOrderEnvelope(payload) || payload;
@@ -693,5 +866,6 @@ module.exports = {
     enrichProviderOrderLinesWithContext,
     buildLineMetadataPayload,
     buildCreateProviderOrderPayload,
+    getInventoryFailureCircuit: () => ({ ...inventoryFailureCircuit }),
   },
 };

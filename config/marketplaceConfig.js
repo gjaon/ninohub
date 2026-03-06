@@ -162,6 +162,9 @@ const getMarketplaceConfig = () => {
         "/api/products",
         "/listings",
       ];
+  const providerFallbackProbeEnabled =
+    parseOptionalBoolean(process.env.MARKETPLACE_PROVIDER_FALLBACK_PROBE_ENABLED)
+    ?? !isProduction;
 
   const originAllowlist = [...new Set([...defaultOrigins, ...frontendOrigins, ...partnerOrigins])];
 
@@ -182,6 +185,13 @@ const getMarketplaceConfig = () => {
     providerApiKey: process.env.MARKETPLACE_PROVIDER_API_KEY || "",
     providerBearerToken,
     providerInventoryPaths: [...new Set(providerInventoryPaths.map((path) => path.trim()).filter(Boolean))],
+    providerFallbackProbeEnabled,
+    providerRequestRetries: Number(process.env.MARKETPLACE_PROVIDER_REQUEST_RETRIES || 2),
+    providerRetryBaseDelayMs: Number(process.env.MARKETPLACE_PROVIDER_RETRY_BASE_DELAY_MS || 250),
+    providerMaxTotalRequestTimeMs: Number(process.env.MARKETPLACE_PROVIDER_MAX_TOTAL_REQUEST_TIME_MS || 12000),
+    providerRequestTimeoutMs: Number(process.env.MARKETPLACE_PROVIDER_REQUEST_TIMEOUT_MS || 5000),
+    providerInventoryFailureThreshold: Number(process.env.MARKETPLACE_PROVIDER_INVENTORY_FAILURE_THRESHOLD || 3),
+    providerInventoryFailureCooldownMs: Number(process.env.MARKETPLACE_PROVIDER_INVENTORY_FAILURE_COOLDOWN_MS || 45000),
     integrationAuthTokenPath,
     integrationAuthRefreshPath,
     integrationAuthTokenFullPath: joinPath(integrationBasePath, integrationAuthTokenPath),
