@@ -13,9 +13,7 @@ const Layout = ({ children }) => {
   const { isAuthenticated, currentUser } = useSelector((state) => state.user);
 
   // Always show main content on waitlist page, hide on other pages if pre-launch - allow login page and registeration page also
-  const showMainContent =
-    !isPreLaunch ||
-    pathname === "/waitlist" ||
+  const showMainContent = pathname === "/waitlist" ||
     pathname === "/login" ||
     pathname === "/register";
 

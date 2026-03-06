@@ -10,6 +10,7 @@ const {
   getPublicInventory,
   triggerInventorySync,
   initializeMarketplaceCheckout,
+  validateMarketplaceCheckoutCoupon,
   verifyAndFinalizeMarketplaceCheckout,
   getBuyerMarketplaceOrders,
   trackBuyerMarketplaceOrder,
@@ -46,6 +47,13 @@ router.post(
   requireAnyFlag(["internalUiEnabled", "publicApiEnabled"]),
   protect,
   initializeMarketplaceCheckout
+);
+
+router.post(
+  "/checkout/coupon/validate",
+  requireAnyFlag(["internalUiEnabled", "publicApiEnabled"]),
+  protect,
+  validateMarketplaceCheckoutCoupon
 );
 
 router.post(

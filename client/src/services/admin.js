@@ -18,3 +18,15 @@ export const updateAdminWaitlistStatus = async (id, status) =>
 export const sendAdminCampaign = async (payload) => api.post("/api/admin/campaigns/send", payload);
 export const getCampaignDeliveryLogs = async (params = {}) =>
   api.get("/api/admin/campaigns/delivery-logs", { params });
+
+export const generateWaitlistCoupons = async (payload) =>
+  api.post("/api/admin/coupons/generate/waitlist", payload);
+
+export const generateUserCoupons = async (payload) =>
+  api.post("/api/admin/coupons/generate/users", payload);
+
+export const getAdminCoupons = async (params = {}) => api.get("/api/admin/coupons", { params });
+
+export const revokeAdminCoupon = async (code) => api.post(`/api/admin/coupons/${encodeURIComponent(code)}/revoke`, {});
+
+export const sendCouponSms = async (payload) => api.post("/api/admin/coupons/send-sms", payload);

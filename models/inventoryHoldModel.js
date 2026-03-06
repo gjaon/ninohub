@@ -35,8 +35,13 @@ const inventoryHoldSchema = mongoose.Schema(
     },
     pricingBreakdown: {
       subtotal: { type: Number, default: 0 },
+      discount: { type: Number, default: 0 },
       shipping: { type: Number, default: 0 },
       tax: { type: Number, default: 0 },
+    },
+    coupon: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
     },
     sessionId: {
       type: String,

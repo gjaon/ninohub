@@ -5,6 +5,7 @@ const User = require("../models/userModel");
 const Waitlist = require("../models/waitlistModel");
 const AdminCampaign = require("../models/adminCampaignModel");
 const CampaignDeliveryLog = require("../models/campaignDeliveryLogModel");
+const Coupon = require("../models/couponModel");
 const {
   appendFallbackNote,
   acquireRetryLock,
@@ -15,7 +16,12 @@ const {
 const { finalizeMarketplaceCheckoutByReference } = require("./marketplaceController");
 const { publishEvent } = require("../services/marketplace/businessEventBus");
 const { renderTemplate, buildRecipientVariables } = require("../services/messaging/templateService");
-const { sendEmailViaResend, sendSmsViaTermii } = require("../services/messaging/providers");
+const { sendSmsViaTermii } = require("../services/messaging/providers");
+const {
+  generateCouponCode,
+  normalizeCouponCode,
+  buildDiscountText,
+} = require("../services/marketplace/couponService");
 const { emitWaitlistCount } = require("../utils/waitlistRealtime");
 
 const parseObjectId = (value) => {
@@ -40,6 +46,166 @@ const buildDateRange = ({ from, to }) => {
     }
   }
   return Object.keys(range).length ? range : null;
+};
+
+const formatIsoDate = (value) => {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+  return date.toISOString();
+};
+
+const formatCurrency = (value) => {
+  const amount = Number(value || 0);
+  return `₦${amount.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}`;
+};
+
+const toReadableFallbackSections = (fallback = {}) => {
+  const lineItems = Array.isArray(fallback.lineItems) ? fallback.lineItems : [];
+  const history = Array.isArray(fallback.history) ? fallback.history : [];
+  const adminNotes = Array.isArray(fallback.adminNotes) ? fallback.adminNotes : [];
+  const unresolvedItems = Array.isArray(fallback.orderIntentSnapshot?.unresolvedItems)
+    ? fallback.orderIntentSnapshot.unresolvedItems
+    : [];
+
+  return {
+    buyerInfo: {
+      name: fallback.buyer?.name || "-",
+      email: fallback.buyer?.email || "-",
+      phone: fallback.buyer?.phone || "-",
+      buyerId: fallback.buyer?.id || "-",
+    },
+    paymentInfo: {
+      reference: fallback.paymentReference || fallback.payment?.reference || "-",
+      status: fallback.payment?.status || "-",
+      amount: formatCurrency(fallback.payment?.amount || fallback.payment?.amountMinor / 100 || 0),
+      verifiedAt: formatIsoDate(fallback.payment?.verifiedAt),
+      currency: fallback.payment?.currency || "NGN",
+    },
+    itemsSummary: {
+      itemCount: lineItems.length,
+      unresolvedItemCount: unresolvedItems.length,
+      items: lineItems.map((item) => ({
+        productName: item?.productName || "Item",
+        quantity: Number(item?.quantity || 0),
+        unitPrice: formatCurrency(item?.unitPrice || 0),
+      })),
+    },
+    errorSummary: {
+      message: fallback.providerError?.message || "-",
+      statusCode: fallback.providerError?.statusCode || "-",
+      retryCount: Number(fallback.retryMeta?.count || 0),
+      unresolvedItems,
+    },
+    timeline: history.map((entry) => ({
+      action: entry?.action || "-",
+      when: formatIsoDate(entry?.occurredAt),
+      actor: entry?.actorEmail || "system",
+    })),
+    adminNotes: adminNotes.map((note) => ({
+      note: note?.note || "",
+      actor: note?.actorEmail || "-",
+      createdAt: formatIsoDate(note?.createdAt),
+    })),
+  };
+};
+
+const buildCouponFilters = (query = {}) => {
+  const filters = {};
+  const status = String(query.status || "").trim();
+  const discountType = String(query.discountType || "").trim();
+  const assignedToType = String(query.assignedToType || "").trim();
+  const code = String(query.code || "").trim();
+  const from = String(query.from || "").trim();
+  const to = String(query.to || "").trim();
+
+  if (status) {
+    filters.status = status;
+  }
+
+  if (discountType) {
+    filters.discountType = discountType;
+  }
+
+  if (assignedToType) {
+    filters.assignedToType = assignedToType;
+  }
+
+  if (code) {
+    filters.code = { $regex: code, $options: "i" };
+  }
+
+  const createdAtRange = buildDateRange({ from, to });
+  if (createdAtRange) {
+    filters.createdAt = createdAtRange;
+  }
+
+  return filters;
+};
+
+const buildDiscountConfig = (payload = {}) => {
+  const discountType = String(payload.discountType || "").trim();
+  const discountValue = Number(payload.discountValue || 0);
+  const expiresAt = payload.expiresAt ? new Date(payload.expiresAt) : null;
+
+  if (!["amount", "percentage"].includes(discountType)) {
+    const error = new Error("discountType must be amount or percentage");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!Number.isFinite(discountValue) || discountValue <= 0) {
+    const error = new Error("discountValue must be greater than zero");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (discountType === "percentage" && discountValue > 100) {
+    const error = new Error("percentage discount cannot exceed 100");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (expiresAt && Number.isNaN(expiresAt.getTime())) {
+    const error = new Error("expiresAt must be a valid date");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    discountType,
+    discountValue,
+    expiresAt,
+  };
+};
+
+const generateUniqueCouponCode = async () => {
+  for (let attempts = 0; attempts < 8; attempts += 1) {
+    const code = generateCouponCode({ prefix: "NINO", length: 8 });
+    const exists = await Coupon.exists({ code });
+    if (!exists) {
+      return code;
+    }
+  }
+
+  const error = new Error("Unable to generate unique coupon code");
+  error.statusCode = 500;
+  throw error;
+};
+
+const normalizePagination = (query = {}) => {
+  const page = Math.max(1, Number(query.page || 1));
+  const limit = Math.min(100, Math.max(1, Number(query.limit || 25)));
+  return {
+    page,
+    limit,
+    skip: (page - 1) * limit,
+  };
 };
 
 const getFallbackQueue = asyncHandler(async (req, res) => {
@@ -78,7 +244,10 @@ const getFallbackById = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: "Fallback record not found" });
   }
 
-  return res.status(200).json(fallback);
+  return res.status(200).json({
+    ...fallback,
+    readableDetails: toReadableFallbackSections(fallback),
+  });
 });
 
 const markFallbackReviewed = asyncHandler(async (req, res) => {
@@ -391,6 +560,448 @@ const updateWaitlistAdminStatus = asyncHandler(async (req, res) => {
   });
 });
 
+const generateWaitlistCoupons = asyncHandler(async (req, res) => {
+  const { dryRun = false, status, search } = req.body || {};
+  const { discountType, discountValue, expiresAt } = buildDiscountConfig(req.body || {});
+
+  const query = {};
+  if (status && ["pending", "contacted", "converted"].includes(String(status))) {
+    query.status = String(status);
+  }
+  if (search) {
+    const regex = new RegExp(String(search).trim(), "i");
+    query.$or = [{ name: regex }, { email: regex }, { phone: regex }];
+  }
+
+  const waitlistRows = await Waitlist.find(query)
+    .select("name email phone status")
+    .sort({ createdAt: -1 })
+    .limit(1000)
+    .lean();
+
+  if (dryRun) {
+    return res.status(200).json({
+      message: "Dry run completed",
+      summary: {
+        requested: waitlistRows.length,
+        generated: 0,
+        skipped: 0,
+        failed: 0,
+      },
+      preview: waitlistRows.slice(0, 20).map((row) => ({
+        assignedToType: "waitlist",
+        assignedToRef: row._id,
+        email: row.email || null,
+        phone: row.phone || null,
+        name: row.name || null,
+      })),
+    });
+  }
+
+  let generated = 0;
+  let skipped = 0;
+  let failed = 0;
+  const createdCoupons = [];
+
+  for (const row of waitlistRows) {
+    try {
+      const existingActive = await Coupon.findOne({
+        assignedToType: "waitlist",
+        assignedToRef: row._id,
+        status: "active",
+      }).select("code");
+
+      if (existingActive) {
+        skipped += 1;
+        continue;
+      }
+
+      const code = await generateUniqueCouponCode();
+      const coupon = await Coupon.create({
+        code,
+        discountType,
+        discountValue,
+        currency: "NGN",
+        status: "active",
+        assignedToType: "waitlist",
+        assignedToRef: row._id,
+        assignedEmail: row.email || null,
+        assignedPhone: row.phone || null,
+        createdByAdminEmail: req.user.email,
+        expiresAt: expiresAt || null,
+      });
+
+      createdCoupons.push(coupon);
+      generated += 1;
+    } catch (_error) {
+      failed += 1;
+    }
+  }
+
+  return res.status(201).json({
+    message: "Waitlist coupons generated",
+    summary: {
+      requested: waitlistRows.length,
+      generated,
+      skipped,
+      failed,
+    },
+    coupons: createdCoupons.map((coupon) => ({
+      code: coupon.code,
+      status: coupon.status,
+      discountType: coupon.discountType,
+      discountValue: coupon.discountValue,
+      assignedToType: coupon.assignedToType,
+      assignedToRef: coupon.assignedToRef,
+      assignedPhone: coupon.assignedPhone,
+      assignedEmail: coupon.assignedEmail,
+      expiresAt: coupon.expiresAt,
+      createdAt: coupon.createdAt,
+    })),
+  });
+});
+
+const generateUserCoupons = asyncHandler(async (req, res) => {
+  const { dryRun = false, userIds = [], search, segment } = req.body || {};
+  const { discountType, discountValue, expiresAt } = buildDiscountConfig(req.body || {});
+
+  const query = {};
+  if (Array.isArray(userIds) && userIds.length) {
+    query._id = {
+      $in: userIds
+        .map((value) => parseObjectId(value))
+        .filter(Boolean),
+    };
+  }
+
+  if (search) {
+    const regex = new RegExp(String(search).trim(), "i");
+    query.$or = [{ name: regex }, { email: regex }, { phone: regex }];
+  }
+
+  if (segment === "with_phone") {
+    query.phone = { $exists: true, $ne: "" };
+  }
+
+  if (segment === "recent_30d") {
+    query.createdAt = { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) };
+  }
+
+  const users = await User.find(query).select("name email phone").sort({ createdAt: -1 }).limit(1000).lean();
+
+  if (dryRun) {
+    return res.status(200).json({
+      message: "Dry run completed",
+      summary: {
+        requested: users.length,
+        generated: 0,
+        skipped: 0,
+        failed: 0,
+      },
+      preview: users.slice(0, 20).map((row) => ({
+        assignedToType: "user",
+        assignedToRef: row._id,
+        email: row.email || null,
+        phone: row.phone || null,
+        name: row.name || null,
+      })),
+    });
+  }
+
+  let generated = 0;
+  let skipped = 0;
+  let failed = 0;
+  const createdCoupons = [];
+
+  for (const user of users) {
+    try {
+      const existingActive = await Coupon.findOne({
+        assignedToType: "user",
+        assignedToRef: user._id,
+        status: "active",
+      }).select("code");
+
+      if (existingActive) {
+        skipped += 1;
+        continue;
+      }
+
+      const code = await generateUniqueCouponCode();
+      const coupon = await Coupon.create({
+        code,
+        discountType,
+        discountValue,
+        currency: "NGN",
+        status: "active",
+        assignedToType: "user",
+        assignedToRef: user._id,
+        assignedEmail: user.email || null,
+        assignedPhone: user.phone || null,
+        createdByAdminEmail: req.user.email,
+        expiresAt: expiresAt || null,
+      });
+
+      createdCoupons.push(coupon);
+      generated += 1;
+    } catch (_error) {
+      failed += 1;
+    }
+  }
+
+  return res.status(201).json({
+    message: "User coupons generated",
+    summary: {
+      requested: users.length,
+      generated,
+      skipped,
+      failed,
+    },
+    coupons: createdCoupons.map((coupon) => ({
+      code: coupon.code,
+      status: coupon.status,
+      discountType: coupon.discountType,
+      discountValue: coupon.discountValue,
+      assignedToType: coupon.assignedToType,
+      assignedToRef: coupon.assignedToRef,
+      assignedPhone: coupon.assignedPhone,
+      assignedEmail: coupon.assignedEmail,
+      expiresAt: coupon.expiresAt,
+      createdAt: coupon.createdAt,
+    })),
+  });
+});
+
+const listCoupons = asyncHandler(async (req, res) => {
+  const filters = buildCouponFilters(req.query);
+  const { page, limit, skip } = normalizePagination(req.query);
+
+  const [data, total] = await Promise.all([
+    Coupon.find(filters)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Coupon.countDocuments(filters),
+  ]);
+
+  return res.status(200).json({
+    page,
+    limit,
+    total,
+    count: data.length,
+    data,
+  });
+});
+
+const revokeCoupon = asyncHandler(async (req, res) => {
+  const code = normalizeCouponCode(req.params.code);
+  const coupon = await Coupon.findOneAndUpdate(
+    {
+      code,
+      status: "active",
+    },
+    {
+      $set: {
+        status: "revoked",
+      },
+    },
+    { new: true }
+  ).lean();
+
+  if (!coupon) {
+    return res.status(404).json({ message: "Active coupon not found" });
+  }
+
+  return res.status(200).json({
+    message: "Coupon revoked",
+    data: coupon,
+  });
+});
+
+const sendCouponSms = asyncHandler(async (req, res) => {
+  const smsBody = String(req.body?.template?.smsBody || req.body?.smsBody || "").trim();
+  if (!smsBody) {
+    return res.status(400).json({ message: "SMS template is required" });
+  }
+
+  const couponCodes = Array.isArray(req.body?.couponCodes)
+    ? req.body.couponCodes.map((code) => normalizeCouponCode(code)).filter(Boolean)
+    : [];
+
+  const filters = couponCodes.length
+    ? { code: { $in: couponCodes } }
+    : {
+        ...buildCouponFilters(req.body?.filters || {}),
+        status: "active",
+      };
+
+  const coupons = await Coupon.find(filters).sort({ assignedToType: 1, createdAt: -1 }).limit(2000).lean();
+
+  const orderedCoupons = coupons.sort((left, right) => {
+    const rank = { waitlist: 0, user: 1, manual: 2 };
+    return (rank[left.assignedToType] ?? 3) - (rank[right.assignedToType] ?? 3);
+  });
+
+  const campaignId = new mongoose.Types.ObjectId().toString();
+  await AdminCampaign.create({
+    campaignId,
+    name: String(req.body?.name || "Coupon SMS").trim() || "Coupon SMS",
+    channels: ["sms"],
+    audience: {
+      scope: "coupons",
+      filters,
+    },
+    template: {
+      smsBody,
+    },
+    status: "running",
+    actorEmail: req.user.email,
+    totals: {
+      recipients: orderedCoupons.length,
+      sent: 0,
+      failed: 0,
+    },
+  });
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (const coupon of orderedCoupons) {
+    const recipientPhone = String(coupon.assignedPhone || "").trim();
+    const recipientEmail = String(coupon.assignedEmail || "").trim();
+
+    let recipientName = "";
+    if (coupon.assignedToType === "user" && coupon.assignedToRef) {
+      const user = await User.findById(coupon.assignedToRef).select("name").lean();
+      recipientName = user?.name || "";
+    }
+
+    if (coupon.assignedToType === "waitlist" && coupon.assignedToRef) {
+      const waitlist = await Waitlist.findById(coupon.assignedToRef).select("name").lean();
+      recipientName = waitlist?.name || "";
+    }
+
+    const variables = {
+      ...buildRecipientVariables({
+        name: recipientName,
+        phone: recipientPhone,
+        email: recipientEmail,
+      }),
+      couponCode: coupon.code,
+      discountText: buildDiscountText({
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue,
+        currency: coupon.currency,
+      }),
+      expiryDate: coupon.expiresAt ? new Date(coupon.expiresAt).toISOString().slice(0, 10) : "",
+    };
+
+    if (!recipientPhone) {
+      skipped += 1;
+      await CampaignDeliveryLog.create({
+        campaignId,
+        recipientKey: `coupon:${coupon.code}`,
+        recipientType: coupon.assignedToType === "waitlist" ? "waitlist" : "user",
+        recipientSnapshot: {
+          assignedToType: coupon.assignedToType,
+          assignedToRef: coupon.assignedToRef,
+          phone: recipientPhone || null,
+          email: recipientEmail || null,
+          couponCode: coupon.code,
+        },
+        channel: "sms",
+        status: "skipped",
+        provider: "termii",
+        payload: {},
+        error: { message: "Missing recipient phone" },
+      });
+      continue;
+    }
+
+    const message = renderTemplate(smsBody, variables);
+
+    try {
+      const result = await sendSmsViaTermii({
+        to: recipientPhone,
+        message,
+      });
+
+      sent += 1;
+      await CampaignDeliveryLog.create({
+        campaignId,
+        recipientKey: `coupon:${coupon.code}`,
+        recipientType: coupon.assignedToType === "waitlist" ? "waitlist" : "user",
+        recipientSnapshot: {
+          assignedToType: coupon.assignedToType,
+          assignedToRef: coupon.assignedToRef,
+          phone: recipientPhone,
+          email: recipientEmail || null,
+          couponCode: coupon.code,
+        },
+        channel: "sms",
+        status: "sent",
+        provider: result.provider,
+        providerMessageId: result.providerMessageId,
+        payload: {
+          message,
+        },
+        sentAt: new Date(),
+      });
+    } catch (error) {
+      failed += 1;
+      await CampaignDeliveryLog.create({
+        campaignId,
+        recipientKey: `coupon:${coupon.code}`,
+        recipientType: coupon.assignedToType === "waitlist" ? "waitlist" : "user",
+        recipientSnapshot: {
+          assignedToType: coupon.assignedToType,
+          assignedToRef: coupon.assignedToRef,
+          phone: recipientPhone,
+          email: recipientEmail || null,
+          couponCode: coupon.code,
+        },
+        channel: "sms",
+        status: "failed",
+        provider: "termii",
+        payload: {
+          message,
+        },
+        error: {
+          message: error?.message || "SMS send failed",
+        },
+      });
+    }
+  }
+
+  await AdminCampaign.updateOne(
+    { campaignId },
+    {
+      $set: {
+        status: "completed",
+        totals: {
+          recipients: orderedCoupons.length,
+          sent,
+          failed,
+          skipped,
+        },
+      },
+    }
+  );
+
+  return res.status(201).json({
+    message: "Coupon SMS processed",
+    campaignId,
+    summary: {
+      requested: orderedCoupons.length,
+      generated: orderedCoupons.length,
+      skipped,
+      failed,
+      sent,
+    },
+  });
+});
+
 const buildRecipients = async ({ audience = {} }) => {
   const scope = String(audience.scope || "all");
   const query = String(audience.query || "").trim();
@@ -457,7 +1068,7 @@ const buildRecipients = async ({ audience = {} }) => {
 
 const sendCampaign = asyncHandler(async (req, res) => {
   const name = String(req.body?.name || "").trim();
-  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [];
+  const channels = ["sms"];
   const audience = req.body?.audience || { scope: "all" };
   const template = req.body?.template || {};
 
@@ -465,8 +1076,8 @@ const sendCampaign = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "name is required" });
   }
 
-  if (!channels.length) {
-    return res.status(400).json({ message: "At least one channel is required" });
+  if (!String(template.smsBody || "").trim()) {
+    return res.status(400).json({ message: "template.smsBody is required" });
   }
 
   const recipients = await buildRecipients({ audience });
@@ -494,63 +1105,6 @@ const sendCampaign = asyncHandler(async (req, res) => {
     const variables = buildRecipientVariables(recipient);
 
     for (const channel of channels) {
-      if (channel === "email") {
-        if (!recipient.email) {
-          await CampaignDeliveryLog.create({
-            campaignId,
-            recipientKey: recipient.recipientKey,
-            recipientType: recipient.recipientType,
-            recipientSnapshot: recipient,
-            channel,
-            status: "skipped",
-            provider: "resend",
-            payload: {},
-            error: { message: "Missing recipient email" },
-          });
-          continue;
-        }
-
-        const subject = renderTemplate(template.subject || "NINO Update", variables);
-        const html = renderTemplate(template.emailBody || "", variables);
-
-        try {
-          const result = await sendEmailViaResend({
-            to: recipient.email,
-            subject,
-            html,
-          });
-
-          await CampaignDeliveryLog.create({
-            campaignId,
-            recipientKey: recipient.recipientKey,
-            recipientType: recipient.recipientType,
-            recipientSnapshot: recipient,
-            channel,
-            status: "sent",
-            provider: result.provider,
-            providerMessageId: result.providerMessageId,
-            payload: { subject, html },
-            sentAt: new Date(),
-          });
-          sent += 1;
-        } catch (error) {
-          await CampaignDeliveryLog.create({
-            campaignId,
-            recipientKey: recipient.recipientKey,
-            recipientType: recipient.recipientType,
-            recipientSnapshot: recipient,
-            channel,
-            status: "failed",
-            provider: "resend",
-            payload: { subject, html },
-            error: {
-              message: error?.message || "Email send failed",
-            },
-          });
-          failed += 1;
-        }
-      }
-
       if (channel === "sms") {
         if (!recipient.phone) {
           await CampaignDeliveryLog.create({
@@ -662,6 +1216,14 @@ module.exports = {
   listUsers,
   listWaitlistAdmin,
   updateWaitlistAdminStatus,
+  generateWaitlistCoupons,
+  generateUserCoupons,
+  listCoupons,
+  revokeCoupon,
+  sendCouponSms,
   sendCampaign,
   listCampaignDeliveryLogs,
+  __testables: {
+    toReadableFallbackSections,
+  },
 };

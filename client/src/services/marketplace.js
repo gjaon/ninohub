@@ -18,6 +18,14 @@ export const verifyMarketplaceCheckout = async ({ reference, status, shippingAdd
   });
 };
 
+export const validateMarketplaceCoupon = async ({ couponCode, shippingAddress, sessionId }) => {
+  return api.post("/api/marketplace/checkout/coupon/validate", {
+    couponCode,
+    shippingAddress,
+    sessionId,
+  });
+};
+
 export const syncMarketplaceEvents = async (sinceIso) => {
   const query = sinceIso ? `?since=${encodeURIComponent(sinceIso)}` : "";
   return api.get(`/api/marketplace/events/sync${query}`);

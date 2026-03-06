@@ -47,18 +47,17 @@ const normalizeIntegrationPath = ({ basePath, candidatePath, fallbackPath }) => 
 const getMarketplaceConfig = () => {
   const isProduction = process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
   const defaultSafeRollout = !isProduction;
-  const publicApiEnabled = parseBooleanFlag(process.env.MARKETPLACE_PUBLIC_API_ENABLED);
-  const webhooksEnabled = parseBooleanFlag(process.env.MARKETPLACE_WEBHOOKS_ENABLED);
-  const internalUiEnabled = parseBooleanFlag(process.env.MARKETPLACE_INTERNAL_UI_ENABLED);
+  const publicApiEnabled = parseBooleanFlag(process.env.MARKETPLACE_PUBLIC_API_ENABLED) || true;
+  const webhooksEnabled = parseBooleanFlag(process.env.MARKETPLACE_WEBHOOKS_ENABLED) || true;
+  const internalUiEnabled = parseBooleanFlag(process.env.MARKETPLACE_INTERNAL_UI_ENABLED) || true ;
   const adaptivePollingEnabled =
     parseOptionalBoolean(process.env.MARKETPLACE_ADAPTIVE_POLLING_ENABLED) ?? defaultSafeRollout;
   const realtimeEventDedupeEnabled =
     parseOptionalBoolean(process.env.MARKETPLACE_REALTIME_EVENT_DEDUPE_ENABLED) ?? defaultSafeRollout;
-  const adminModuleEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MODULE_ENABLED) ?? false;
-  const checkoutFallbackEnabled = parseOptionalBoolean(process.env.MARKETPLACE_CHECKOUT_FALLBACK_ENABLED) ?? false;
-  const adminMessagingEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MESSAGING_ENABLED) ?? false;
-  const instantProductsRenderEnabled =
-    parseOptionalBoolean(process.env.MARKETPLACE_INSTANT_PRODUCTS_RENDER_ENABLED) ?? defaultSafeRollout;
+  const adminModuleEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MODULE_ENABLED) ?? true;
+  const checkoutFallbackEnabled = parseOptionalBoolean(process.env.MARKETPLACE_CHECKOUT_FALLBACK_ENABLED) ?? true;
+  const adminMessagingEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MESSAGING_ENABLED) ?? true;
+  const instantProductsRenderEnabled = true;
   const paystackMode = (process.env.PAYSTACK_MODE || "test").trim().toLowerCase();
 
   assert(["test", "live"].includes(paystackMode), "PAYSTACK_MODE must be either 'test' or 'live'");

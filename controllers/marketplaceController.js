@@ -4,6 +4,7 @@ const Cart = require("../models/cartModel");
 const Order = require("../models/orderModel");
 const InventoryHold = require("../models/inventoryHoldModel");
 const MarketplaceOrder = require("../models/marketplaceOrderModel");
+const Coupon = require("../models/couponModel");
 const MarketplaceProductCache = require("../models/marketplaceProductCacheModel");
 const MarketplaceWebhookEndpoint = require("../models/marketplaceWebhookEndpointModel");
 const BusinessEvent = require("../models/businessEventModel");
@@ -36,6 +37,10 @@ const { publishEvent } = require("../services/marketplace/businessEventBus");
 const { recordMetric, getMetrics } = require("../services/marketplace/metricsService");
 const CheckoutFallback = require("../models/checkoutFallbackModel");
 const { createOrUpdateFallback } = require("../services/marketplace/checkoutFallbackService");
+const {
+  normalizeCouponCode,
+  validateCouponForCheckout,
+} = require("../services/marketplace/couponService");
 
 const mapCartItemsToProvider = (items = []) =>
   items.map((item, index) => ({
@@ -314,16 +319,91 @@ const toMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
 const computeCheckoutTotals = (subtotalAmount, options = {}) => {
   const isPickup = String(options.fulfillmentMethod || "").toLowerCase() === "pickup";
   const subtotal = toMoney(subtotalAmount);
-  const shipping = subtotal > 0 && !isPickup ? CHECKOUT_SHIPPING_FEE_NGN : 0;
-  const tax = toMoney(subtotal * CHECKOUT_TAX_RATE);
-  const total = toMoney(subtotal + shipping + tax);
+  const discount = Math.min(subtotal, Math.max(0, toMoney(options.discountAmount || 0)));
+  const discountedSubtotal = toMoney(Math.max(0, subtotal - discount));
+  const shipping = discountedSubtotal > 0 && !isPickup ? CHECKOUT_SHIPPING_FEE_NGN : 0;
+  const tax = toMoney(discountedSubtotal * CHECKOUT_TAX_RATE);
+  const total = toMoney(discountedSubtotal + shipping + tax);
 
   return {
     subtotal,
+    discount,
+    discountedSubtotal,
     shipping,
     tax,
     total,
   };
+};
+
+const redeemCouponFromHold = async ({ hold, order, reference, buyerId, correlationId }) => {
+  const holdCoupon = hold?.coupon;
+  const normalizedCode = normalizeCouponCode(holdCoupon?.code);
+  if (!normalizedCode) {
+    return {
+      skipped: true,
+      redeemed: false,
+      reason: "no_coupon",
+    };
+  }
+
+  const redemptionMetadata = {
+    redeemedAt: new Date(),
+    redeemedByUserId: buyerId || null,
+    paymentReference: reference,
+    orderId: order?.orderId || null,
+  };
+
+  const redeemedCoupon = await Coupon.findOneAndUpdate(
+    {
+      code: normalizedCode,
+      status: "active",
+    },
+    {
+      $set: {
+        status: "redeemed",
+        redemption: redemptionMetadata,
+      },
+    },
+    {
+      new: true,
+    }
+  );
+
+  if (redeemedCoupon) {
+    console.info("[marketplace:coupon:redeem] redeemed", {
+      correlationId,
+      code: normalizedCode,
+      reference,
+      orderId: order?.orderId || null,
+    });
+    return {
+      skipped: false,
+      redeemed: true,
+      coupon: redeemedCoupon,
+    };
+  }
+
+  const existingCoupon = await Coupon.findOne({ code: normalizedCode }).lean();
+  const alreadyRedeemedForReference =
+    existingCoupon?.status === "redeemed"
+    && String(existingCoupon?.redemption?.paymentReference || "") === String(reference || "");
+
+  if (alreadyRedeemedForReference) {
+    return {
+      skipped: false,
+      redeemed: true,
+      idempotent: true,
+      coupon: existingCoupon,
+    };
+  }
+
+  const error = new Error("Coupon redemption conflict");
+  error.statusCode = 409;
+  error.details = {
+    couponCode: normalizedCode,
+    couponStatus: existingCoupon?.status || "unknown",
+  };
+  throw error;
 };
 
 const toLegacyOrderStatus = (marketplaceStatus) => {
@@ -523,6 +603,23 @@ const finalizeMarketplaceCheckoutByReference = async ({
 
     const holdForExisting = await InventoryHold.findOne({ paymentReference: reference });
     if (holdForExisting) {
+      try {
+        await redeemCouponFromHold({
+          hold: holdForExisting,
+          order: existingOrder,
+          reference,
+          buyerId: authenticatedBuyerId || holdForExisting.buyerId,
+          correlationId: holdForExisting.correlationId,
+        });
+      } catch (couponError) {
+        console.warn("[marketplace:coupon:redeem] idempotent check failed", {
+          correlationId: holdForExisting.correlationId,
+          reference,
+          message: couponError?.message,
+          details: couponError?.details || null,
+        });
+      }
+
       await syncLegacyOrderFromMarketplace({
         marketplaceOrder: existingOrder,
         hold: holdForExisting,
@@ -833,6 +930,13 @@ const finalizeMarketplaceCheckoutByReference = async ({
   hold.status = "completed";
   hold.paymentStatus = "verified";
   hold.shippingAddress = resolvedShippingAddress;
+  await redeemCouponFromHold({
+    hold,
+    order,
+    reference,
+    buyerId,
+    correlationId: hold.correlationId,
+  });
   hold.auditTrail.push({
     action: "payment_verified",
     occurredAt: new Date(),
@@ -1056,11 +1160,31 @@ const initializeMarketplaceCheckout = asyncHandler(async (req, res) => {
     const holdId = uuidv4();
     const resolved = await resolveCartAmount(cart);
     const subtotalAmount = toMonetaryNumber(resolved.amount, 0);
+    const couponCode = normalizeCouponCode(req.body?.couponCode);
     const shippingAddress = req.body?.shippingAddress && typeof req.body.shippingAddress === "object"
       ? req.body.shippingAddress
       : {};
+
+    let couponSnapshot = null;
+    if (couponCode) {
+      couponSnapshot = await validateCouponForCheckout({
+        couponCode,
+        buyerId,
+        shippingAddress,
+        subtotal: subtotalAmount,
+      });
+
+      console.info("[marketplace:coupon:validate] checkout initialize", {
+        correlationId,
+        buyerId: String(buyerId),
+        code: couponSnapshot.code,
+        appliedDiscount: couponSnapshot.appliedDiscount,
+      });
+    }
+
     const totals = computeCheckoutTotals(subtotalAmount, {
       fulfillmentMethod: shippingAddress.fulfillmentMethod,
+      discountAmount: couponSnapshot?.appliedDiscount || 0,
     });
     const holdAmount = totals.total;
 
@@ -1115,9 +1239,21 @@ const initializeMarketplaceCheckout = asyncHandler(async (req, res) => {
       currency: "NGN",
       pricingBreakdown: {
         subtotal: totals.subtotal,
+        discount: totals.discount,
         shipping: totals.shipping,
         tax: totals.tax,
       },
+      coupon: couponSnapshot
+        ? {
+            code: couponSnapshot.code,
+            discountType: couponSnapshot.discountType,
+            discountValue: couponSnapshot.discountValue,
+            currency: couponSnapshot.currency,
+            appliedDiscount: couponSnapshot.appliedDiscount,
+            statusAtInitialization: couponSnapshot.status,
+            expiresAt: couponSnapshot.expiresAt || null,
+          }
+        : null,
       sessionId,
       items: cart.items.map((item) => ({
         productId: String(item.productId),
@@ -1158,10 +1294,19 @@ const initializeMarketplaceCheckout = asyncHandler(async (req, res) => {
       idempotencyKey,
       amountBreakdown: {
         subtotal: totals.subtotal,
+        discount: totals.discount,
         shipping: totals.shipping,
         tax: totals.tax,
         total: totals.total,
       },
+      discountBreakdown: couponSnapshot
+        ? {
+            code: couponSnapshot.code,
+            type: couponSnapshot.discountType,
+            value: couponSnapshot.discountValue,
+            appliedAmount: couponSnapshot.appliedDiscount,
+          }
+        : null,
       expiresAt: holdExpiresAt.toISOString(),
     };
 
@@ -1184,6 +1329,7 @@ const initializeMarketplaceCheckout = asyncHandler(async (req, res) => {
         reference: payment.reference,
         amount: holdAmount,
         subtotal: totals.subtotal,
+        discount: totals.discount,
         shipping: totals.shipping,
         tax: totals.tax,
         lineCount: providerLineResolution.resolvedLines.length,
@@ -1211,6 +1357,60 @@ const initializeMarketplaceCheckout = asyncHandler(async (req, res) => {
     });
     throw error;
   }
+});
+
+const validateMarketplaceCheckoutCoupon = asyncHandler(async (req, res) => {
+  const buyerId = req.user?._id || req.user?.id;
+  if (!buyerId) {
+    return res.status(401).json({ message: "Authentication required" });
+  }
+
+  const couponCode = normalizeCouponCode(req.body?.couponCode);
+  if (!couponCode) {
+    return res.status(400).json({ message: "couponCode is required" });
+  }
+
+  const sessionId = String(req.body?.sessionId || "").trim() || null;
+  const cart = await resolveCheckoutCart({ buyerId, sessionId });
+  if (!cart || !cart.items.length) {
+    return res.status(400).json({ message: "Cart is empty" });
+  }
+
+  const resolved = await resolveCartAmount(cart);
+  const subtotalAmount = toMonetaryNumber(resolved.amount, 0);
+  const shippingAddress = req.body?.shippingAddress && typeof req.body.shippingAddress === "object"
+    ? req.body.shippingAddress
+    : {};
+
+  const couponSnapshot = await validateCouponForCheckout({
+    couponCode,
+    buyerId,
+    shippingAddress,
+    subtotal: subtotalAmount,
+  });
+
+  const totals = computeCheckoutTotals(subtotalAmount, {
+    fulfillmentMethod: shippingAddress.fulfillmentMethod,
+    discountAmount: couponSnapshot.appliedDiscount,
+  });
+
+  return res.status(200).json({
+    message: "Coupon applied",
+    valid: true,
+    discountBreakdown: {
+      code: couponSnapshot.code,
+      type: couponSnapshot.discountType,
+      value: couponSnapshot.discountValue,
+      appliedAmount: couponSnapshot.appliedDiscount,
+    },
+    amountBreakdown: {
+      subtotal: totals.subtotal,
+      discount: totals.discount,
+      shipping: totals.shipping,
+      tax: totals.tax,
+      total: totals.total,
+    },
+  });
 });
 
 const verifyAndFinalizeMarketplaceCheckout = asyncHandler(async (req, res) => {
@@ -1356,6 +1556,7 @@ module.exports = {
   getPublicInventory,
   triggerInventorySync,
   initializeMarketplaceCheckout,
+  validateMarketplaceCheckoutCoupon,
   finalizeMarketplaceCheckoutByReference,
   verifyAndFinalizeMarketplaceCheckout,
   getBuyerMarketplaceOrders,
@@ -1367,5 +1568,7 @@ module.exports = {
     mapCartItemsToProvider,
     buildProviderLineIdentity,
     resolveProviderLinesFromHoldItems,
+    computeCheckoutTotals,
+    redeemCouponFromHold,
   },
 };

@@ -16,6 +16,9 @@ const buildRecipientVariables = (recipient = {}) => {
     firstName,
     phone: recipient.phone || "",
     email: recipient.email || "",
+    couponCode: recipient.couponCode || "",
+    discountText: recipient.discountText || "",
+    expiryDate: recipient.expiryDate || "",
   };
 };
 

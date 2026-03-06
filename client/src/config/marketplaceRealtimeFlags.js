@@ -22,7 +22,7 @@ const resolveFlag = (value, fallback = defaultEnabled) => {
 export const marketplaceRealtimeFlags = {
   reduxPersistEnabled: true,
   realtimeSyncEnabled: realtimesync,
-  instantProductsRenderEnabled: resolveFlag(process.env.REACT_APP_MARKETPLACE_INSTANT_PRODUCTS_RENDER_ENABLED, true),
+  instantProductsRenderEnabled: true,
 };
 
 export default marketplaceRealtimeFlags;

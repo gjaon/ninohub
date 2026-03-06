@@ -7,6 +7,7 @@ import { setUser } from "../redux/slices/userSlice";
 import { getUser } from "../services/auth";
 import {
   initializeMarketplaceCheckout,
+  validateMarketplaceCoupon,
   verifyMarketplaceCheckout,
 } from "../services/marketplace";
 import { getSocket } from "../services/socket";
@@ -23,12 +24,16 @@ const toMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
 const computeCheckoutTotals = (subtotalAmount, options = {}) => {
   const isPickup = String(options.fulfillmentMethod || "").toLowerCase() === "pickup";
   const subtotal = toMoney(subtotalAmount);
-  const shipping = subtotal > 0 && !isPickup ? CHECKOUT_SHIPPING_FEE_NGN : 0;
-  const tax = toMoney(subtotal * CHECKOUT_TAX_RATE);
-  const total = toMoney(subtotal + shipping + tax);
+  const discount = Math.min(subtotal, Math.max(0, toMoney(options.discountAmount || 0)));
+  const discountedSubtotal = toMoney(Math.max(0, subtotal - discount));
+  const shipping = discountedSubtotal > 0 && !isPickup ? CHECKOUT_SHIPPING_FEE_NGN : 0;
+  const tax = toMoney(discountedSubtotal * CHECKOUT_TAX_RATE);
+  const total = toMoney(discountedSubtotal + shipping + tax);
 
   return {
     subtotal,
+    discount,
+    discountedSubtotal,
     shipping,
     tax,
     total,
@@ -67,6 +72,10 @@ const Checkout = () => {
     state: "",
     country: "",
   });
+  const [couponCodeInput, setCouponCodeInput] = useState("");
+  const [couponState, setCouponState] = useState("idle");
+  const [couponMessage, setCouponMessage] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
 
   const searchParams = useMemo(
     () => new URLSearchParams(location.search),
@@ -79,6 +88,16 @@ const Checkout = () => {
     () => computeCheckoutTotals(totalAmount, { fulfillmentMethod }),
     [totalAmount, fulfillmentMethod]
   );
+
+  const effectiveTotals = appliedCoupon?.amountBreakdown
+    ? {
+        subtotal: Number(appliedCoupon.amountBreakdown.subtotal || 0),
+        discount: Number(appliedCoupon.amountBreakdown.discount || 0),
+        shipping: Number(appliedCoupon.amountBreakdown.shipping || 0),
+        tax: Number(appliedCoupon.amountBreakdown.tax || 0),
+        total: Number(appliedCoupon.amountBreakdown.total || 0),
+      }
+    : checkoutTotals;
 
   useEffect(() => {
     let isMounted = true;
@@ -236,6 +255,12 @@ const Checkout = () => {
   ]);
 
   const handleInputChange = (e) => {
+    if (couponState === "applied") {
+      setCouponState("idle");
+      setCouponMessage("Coupon cleared because delivery details changed.");
+      setAppliedCoupon(null);
+    }
+
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
@@ -319,6 +344,7 @@ const Checkout = () => {
         {
           shippingAddress,
           sessionId: localStorage.getItem("sessionId") || null,
+          couponCode: appliedCoupon?.code || undefined,
         },
         idempotencyKey,
         correlationId
@@ -340,6 +366,40 @@ const Checkout = () => {
     navigate("/cart");
     return null;
   }
+
+  const onApplyCoupon = async () => {
+    const normalizedCode = String(couponCodeInput || "").trim().toUpperCase();
+    if (!normalizedCode) {
+      setCouponState("invalid");
+      setCouponMessage("Enter a coupon code before applying.");
+      setAppliedCoupon(null);
+      return;
+    }
+
+    try {
+      setCouponState("validating");
+      setCouponMessage("Validating coupon...");
+
+      const shippingAddress = toShippingAddress();
+      const response = await validateMarketplaceCoupon({
+        couponCode: normalizedCode,
+        shippingAddress,
+        sessionId: localStorage.getItem("sessionId") || null,
+      });
+
+      setAppliedCoupon({
+        code: response?.discountBreakdown?.code || normalizedCode,
+        discountBreakdown: response?.discountBreakdown || null,
+        amountBreakdown: response?.amountBreakdown || null,
+      });
+      setCouponState("applied");
+      setCouponMessage("Coupon applied successfully.");
+    } catch (error) {
+      setCouponState("invalid");
+      setCouponMessage(error.message || "Coupon is invalid");
+      setAppliedCoupon(null);
+    }
+  };
 
   return (
     <div className="checkout-page">
@@ -380,6 +440,11 @@ const Checkout = () => {
                   onClick={() => {
                     setFulfillmentMethod("delivery");
                     setCheckoutError("");
+                    if (couponState === "applied") {
+                      setCouponState("idle");
+                      setCouponMessage("Coupon cleared because fulfillment changed.");
+                      setAppliedCoupon(null);
+                    }
                   }}
                 >
                   Delivery
@@ -390,6 +455,11 @@ const Checkout = () => {
                   onClick={() => {
                     setFulfillmentMethod("pickup");
                     setCheckoutError("");
+                    if (couponState === "applied") {
+                      setCouponState("idle");
+                      setCouponMessage("Coupon cleared because fulfillment changed.");
+                      setAppliedCoupon(null);
+                    }
                   }}
                 >
                   Pick up at Nino's store
@@ -496,6 +566,36 @@ const Checkout = () => {
                   </div>
                 ))}
               </div>
+
+              <div className="review-group">
+                <h3>Coupon</h3>
+                <div className="coupon-row">
+                  <input
+                    type="text"
+                    placeholder="Enter coupon code"
+                    value={couponCodeInput}
+                    onChange={(event) => {
+                      setCouponCodeInput(event.target.value.toUpperCase());
+                      if (couponState === "invalid") {
+                        setCouponState("idle");
+                        setCouponMessage("");
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={onApplyCoupon}
+                    disabled={couponState === "validating" || submitting || verifying}
+                  >
+                    {couponState === "validating" ? "Applying..." : "Apply"}
+                  </button>
+                </div>
+                {couponMessage ? (
+                  <p className={`coupon-state ${couponState}`}>
+                    {couponMessage}
+                  </p>
+                ) : null}
+              </div>
             </div>
           )}
 
@@ -538,24 +638,28 @@ const Checkout = () => {
           <div className="summary-totals">
             <div className="summary-row">
               <span>Subtotal</span>
-              <span>{formatNaira(checkoutTotals.subtotal)}</span>
+              <span>{formatNaira(effectiveTotals.subtotal)}</span>
+            </div>
+            <div className="summary-row">
+              <span>Discount</span>
+              <span>-{formatNaira(effectiveTotals.discount || 0)}</span>
             </div>
             <div className="summary-row">
               <span>{fulfillmentMethod === "pickup" ? "Pickup" : "Shipping"}</span>
               <span>
                 {fulfillmentMethod === "pickup"
                   ? "₦0"
-                  : formatNaira(checkoutTotals.shipping)}
+                  : formatNaira(effectiveTotals.shipping)}
               </span>
             </div>
             <div className="summary-row">
               <span>{`VAT (${CHECKOUT_VAT_PERCENT_LABEL})`}</span>
-              <span>{formatNaira(checkoutTotals.tax)}</span>
+              <span>{formatNaira(effectiveTotals.tax)}</span>
             </div>
             <div className="summary-divider"></div>
             <div className="summary-row total">
               <span>Total</span>
-              <span>{formatNaira(checkoutTotals.total)}</span>
+              <span>{formatNaira(effectiveTotals.total)}</span>
             </div>
           </div>
         </div>

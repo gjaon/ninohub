@@ -43,8 +43,7 @@ test.beforeEach(async () => {
 });
 
 test("campaign send logs failures when provider configuration is missing", async () => {
-  delete process.env.RESEND_API_KEY;
-  delete process.env.RESEND_FROM_EMAIL;
+  delete process.env.TERMII_API_KEY;
 
   await User.create({
     name: "Recipient User",
@@ -56,13 +55,12 @@ test("campaign send logs failures when provider configuration is missing", async
     user: { email: "admin@ninohub.com" },
     body: {
       name: "Launch campaign",
-      channels: ["email"],
+      channels: ["sms"],
       audience: {
         scope: "users",
       },
       template: {
-        subject: "Hello {{firstName}}",
-        emailBody: "<p>Hello {{name}}</p>",
+        smsBody: "Hello {{firstName}}",
       },
     },
   };
@@ -81,5 +79,5 @@ test("campaign send logs failures when provider configuration is missing", async
   const logs = await CampaignDeliveryLog.find({ campaignId: campaign.campaignId }).lean();
   assert.equal(logs.length, 1);
   assert.equal(logs[0].status, "failed");
-  assert.equal(logs[0].channel, "email");
+  assert.equal(logs[0].channel, "sms");
 });
