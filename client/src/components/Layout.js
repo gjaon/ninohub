@@ -26,17 +26,7 @@ const Layout = ({ children }) => {
   return (
     <div className="layout-container">
       <Navbar />
-      {shouldDisplayLaunchCountDown ? (
-        <>
-          {" "}
-          <LaunchCountdown />
-          {showMainContent && (
-            <main className="layout-main-content">{children}</main>
-          )}{" "}
-        </>
-      ) : (
         <main className="layout-main-content">{children}</main>
-      )}
 
       {/* <main className="layout-main-content">{children}</main> */}
       <Footer />
