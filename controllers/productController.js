@@ -1,12 +1,65 @@
 const products = require("../data/product");
-const { shouldUseProviderProducts } = require("../config/marketplaceConfig");
+const { v4: uuidv4 } = require("uuid");
+const { shouldUseProviderProducts, getMarketplaceConfig } = require("../config/marketplaceConfig");
 const {
   getProjectedProducts,
   syncInventoryProjection,
   syncInventoryProjectionIfStale,
+  getProjectionSyncState,
 } = require("../services/marketplace/inventoryProjectionService");
 const { recordMetric } = require("../services/marketplace/metricsService");
 const { applyEffectiveAvailability } = require("../utils/productAvailability");
+
+const LATENCY_SAMPLE_LIMIT = 120;
+const productsReadLatencySamples = [];
+
+const toLatencyBucket = (latencyMs) => {
+  const value = Number(latencyMs || 0);
+  if (value < 100) return "lt-100ms";
+  if (value < 250) return "100-249ms";
+  if (value < 500) return "250-499ms";
+  if (value < 1000) return "500-999ms";
+  if (value < 2000) return "1000-1999ms";
+  return "gte-2000ms";
+};
+
+const percentile = (samples = [], ratio = 0.5) => {
+  if (!samples.length) return 0;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[index];
+};
+
+const trackProductsReadLatency = (latencyMs) => {
+  const bounded = Math.max(0, Number(latencyMs || 0));
+  productsReadLatencySamples.push(bounded);
+  if (productsReadLatencySamples.length > LATENCY_SAMPLE_LIMIT) {
+    productsReadLatencySamples.shift();
+  }
+
+  return {
+    p50: percentile(productsReadLatencySamples, 0.5),
+    p95: percentile(productsReadLatencySamples, 0.95),
+  };
+};
+
+const writeProductsReadHeaders = (res, metadata = {}) => {
+  const entries = {
+    "x-marketplace-products-source": metadata.source || "unknown",
+    "x-marketplace-products-cache-age-ms": String(Math.max(0, Number(metadata.cacheAgeMs || 0))),
+    "x-marketplace-products-last-successful-sync-at": metadata.lastSuccessfulSyncAt
+      ? new Date(metadata.lastSuccessfulSyncAt).toISOString()
+      : "",
+    "x-marketplace-products-correlation-id": metadata.correlationId || "",
+    "x-marketplace-products-status": metadata.status || "ok",
+  };
+
+  Object.entries(entries).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      res.setHeader(key, String(value));
+    }
+  });
+};
 
 const toSafeString = (value) => {
   if (value === null || value === undefined) {
@@ -213,10 +266,11 @@ const toFrontendProduct = (product) => {
   };
 };
 
-const triggerProjectionRefreshInBackground = ({ trigger }) => {
+const triggerProjectionRefreshInBackground = ({ trigger, correlationId }) => {
   syncInventoryProjectionIfStale({
     trigger,
     maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
+    correlationId,
   }).catch((error) => {
     console.warn("[products:projection-refresh] stale refresh skipped", error.message);
   });
@@ -230,52 +284,132 @@ const recordReadMetricSafe = async (key, labels = {}) => {
 };
 
 const getProducts = async (req, res) => {
+  const requestStartedAt = Date.now();
+  const correlationId = String(req.headers["x-correlation-id"] || "").trim() || uuidv4();
   const useProviderProducts = shouldUseProviderProducts();
+  const marketplaceConfig = getMarketplaceConfig();
+  const instantProductsRenderEnabled = Boolean(marketplaceConfig.instantProductsRenderEnabled);
   if (!useProviderProducts) {
     recordReadMetricSafe("marketplace.products.read.path", {
       source: "http-get-products",
       cachePath: "local-fallback",
     });
     const normalized = await applyEffectiveAvailability(products.map(toFrontendProduct));
+    writeProductsReadHeaders(res, {
+      source: "local-fallback",
+      cacheAgeMs: 0,
+      lastSuccessfulSyncAt: null,
+      correlationId,
+      status: "ok",
+    });
     return res.status(200).json(normalized);
   }
+
+  const syncStateBefore = getProjectionSyncState();
+  const cacheAgeMsBefore = syncStateBefore.lastSuccessfulSyncAt
+    ? Math.max(0, Date.now() - Number(syncStateBefore.lastSuccessfulSyncAt))
+    : 0;
+
+  const finalizeRead = async ({ payload, cachePath, source, status = "ok", cacheAgeMs = cacheAgeMsBefore }) => {
+    const latencyMs = Math.max(0, Date.now() - requestStartedAt);
+    const { p50, p95 } = trackProductsReadLatency(latencyMs);
+
+    writeProductsReadHeaders(res, {
+      source,
+      cacheAgeMs,
+      lastSuccessfulSyncAt: syncStateBefore.lastSuccessfulSyncAt,
+      correlationId,
+      status,
+    });
+
+    await Promise.all([
+      recordReadMetricSafe("marketplace.products.read.path", {
+        source: "http-get-products",
+        cachePath,
+      }),
+      recordReadMetricSafe("marketplace.products.read.latency_bucket", {
+        source: "http-get-products",
+        cachePath,
+        bucket: toLatencyBucket(latencyMs),
+      }),
+      recordReadMetricSafe("marketplace.products.read.latency_percentile", {
+        source: "http-get-products",
+        percentile: "p50",
+        bucket: toLatencyBucket(p50),
+      }),
+      recordReadMetricSafe("marketplace.products.read.latency_percentile", {
+        source: "http-get-products",
+        percentile: "p95",
+        bucket: toLatencyBucket(p95),
+      }),
+    ]);
+
+    return res.status(200).json(payload);
+  };
+
+  const trigger = syncStateBefore.inFlight
+    ? "on-demand-products-read-join-inflight"
+    : "on-demand-products-read-stale-refresh";
 
   let projected = await getProjectedProducts();
 
   if (projected.length) {
-    recordReadMetricSafe("marketplace.products.read.path", {
-      source: "http-get-products",
-      cachePath: "cache-hit-stale-refresh",
-    });
     console.info("[marketplace:products-read] cache-hit", {
       source: "http-get-products",
       cachedCount: projected.length,
+      correlationId,
     });
-    triggerProjectionRefreshInBackground({ trigger: "on-demand-products-read-stale-refresh" });
+    triggerProjectionRefreshInBackground({ trigger, correlationId });
     const normalized = await applyEffectiveAvailability(projected.map(toFrontendProduct));
-    return res.status(200).json(normalized);
+    return finalizeRead({
+      payload: normalized,
+      cachePath: syncStateBefore.inFlight ? "sync-joined-inflight" : "cache-hit-stale-refresh",
+      source: "projection-cache",
+      cacheAgeMs: cacheAgeMsBefore,
+    });
   }
 
-  if (!projected.length) {
-    recordReadMetricSafe("marketplace.products.read.path", {
-      source: "http-get-products",
-      cachePath: "cold-start-sync",
-    });
-    console.info("[marketplace:products-read] cold-start-sync", {
-      source: "http-get-products",
-    });
-    await syncInventoryProjection({ trigger: "on-demand-products-read-cold-start" });
+  console.info("[marketplace:products-read] cache-miss-empty-projection", {
+    source: "http-get-products",
+    correlationId,
+  });
+
+  if (!instantProductsRenderEnabled) {
+    await syncInventoryProjection({ trigger: "on-demand-products-read-cold-start", correlationId });
     projected = await getProjectedProducts();
-  }
-
-  if (!projected.length) {
-    return res.status(502).json({
-      message: "Provider inventory is unavailable. No projected products found.",
+    if (!projected.length) {
+      return res.status(502).json({
+        message: "Provider inventory is unavailable. No projected products found.",
+      });
+    }
+    const normalized = await applyEffectiveAvailability(projected.map(toFrontendProduct));
+    return finalizeRead({
+      payload: normalized,
+      cachePath: "cold-start-sync-blocking",
+      source: "projection-cache",
+      status: "ok",
+      cacheAgeMs: 0,
     });
   }
 
-  const normalized = await applyEffectiveAvailability(projected.map(toFrontendProduct));
-  return res.status(200).json(normalized);
+  syncInventoryProjectionIfStale({
+    trigger: "on-demand-products-read-cold-start-warm",
+    maxAgeMs: 0,
+    correlationId,
+  }).catch((error) => {
+    console.warn("[products:projection-refresh] cold-start warm skipped", {
+      correlationId,
+      message: error.message,
+    });
+  });
+
+  return finalizeRead({
+    payload: [],
+    cachePath: "cold-start-empty-async-warm",
+    source: "projection-cache-empty",
+    status: "warming",
+    cacheAgeMs: cacheAgeMsBefore,
+  });
 };
 
 const getProductById = async (req, res) => {
@@ -292,7 +426,10 @@ const getProductById = async (req, res) => {
         source: "http-get-product-by-id",
         cachePath: "cache-hit-stale-refresh",
       });
-      triggerProjectionRefreshInBackground({ trigger: "on-demand-product-detail-read-stale-refresh" });
+      triggerProjectionRefreshInBackground({
+        trigger: "on-demand-product-detail-read-stale-refresh",
+        correlationId: uuidv4(),
+      });
     }
 
     if (!projected.length) {

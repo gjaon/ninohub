@@ -14,7 +14,9 @@ const normalizeProductsState = (state = {}) => {
     selectedCategory,
     searchTerm,
     loading: false,
+    refreshing: false,
     error: null,
+    lastAppliedSyncAt: state.lastAppliedSyncAt || null,
   };
 };
 

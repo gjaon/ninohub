@@ -6,7 +6,7 @@ import {
   useLocation,
 } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
-import { setProducts, setLoading, setError } from "./redux/slices/productsSlice";
+import { setProducts, setLoading, setRefreshing, setError } from "./redux/slices/productsSlice";
 import { setUser } from "./redux/slices/userSlice";
 import { updateCartFromSocket } from "./redux/slices/cartSlice";
 import {
@@ -20,6 +20,11 @@ import { initializeSocket } from "./services/socket";
 import { syncMarketplaceEvents } from "./services/marketplace";
 import { marketplaceRealtimeFlags } from "./config/marketplaceRealtimeFlags";
 import { LaunchProvider } from "./context/LaunchContext";
+import {
+  toMs,
+  shouldApplyIncomingSync,
+  getPayloadSyncMs,
+} from "./utils/productsFreshness";
 import Layout from "./components/Layout";
 import Home from "./pages/Home";
 import Products from "./pages/Products";
@@ -37,6 +42,27 @@ import WaitlistForm from "./pages/WaitlistForm";
 import AdminPanel from "./pages/AdminPanel";
 import "./App.css";
 
+const createCorrelationId = (prefix = "web") => {
+  const random = Math.random().toString(16).slice(2, 10);
+  return `${prefix}-${Date.now()}-${random}`;
+};
+
+const emitProductsTimingMetric = (name, valueMs, labels = {}) => {
+  const payload = {
+    name,
+    valueMs: Math.max(0, Number(valueMs || 0)),
+    labels,
+    recordedAt: new Date().toISOString(),
+  };
+
+  if (typeof window !== "undefined") {
+    window.__NINO_PRODUCTS_METRICS__ = window.__NINO_PRODUCTS_METRICS__ || [];
+    window.__NINO_PRODUCTS_METRICS__.push(payload);
+  }
+
+  console.info("[products:timing]", payload);
+};
+
 // Scroll to top on route change
 function ScrollToTop() {
   const { pathname } = useLocation();
@@ -53,13 +79,21 @@ function App() {
   const dispatch = useDispatch();
   const { currentUser } = useSelector((state) => state.user);
   const products = useSelector((state) => state.products.items);
+  const lastAppliedSyncAt = useSelector((state) => state.products.lastAppliedSyncAt);
   const rehydrated = useSelector((state) => state?._persist?.rehydrated ?? true);
   const marketplaceLastEventAt = useSelector((state) => state.marketplaceSync?.syncMeta?.lastEventAt);
+  const lastProductsSyncAt = useSelector((state) => state.marketplaceSync?.syncMeta?.lastProductsSyncAt);
   const hasSocketSyncedProductsRef = React.useRef(false);
   const lastSocketSyncAtRef = React.useRef(0);
+  const lastKnownProductsSyncAtRef = React.useRef(0);
   const pendingProductsResyncRef = React.useRef(null);
   const productsCountRef = React.useRef(products.length);
   const rehydratedRef = React.useRef(rehydrated);
+  const initialProductsFetchDoneRef = React.useRef(false);
+  const appBootPerfRef = React.useRef(
+    typeof performance !== "undefined" && performance.now ? performance.now() : Date.now()
+  );
+  const firstProductsVisibleMetricSentRef = React.useRef(false);
 
   useEffect(() => {
     productsCountRef.current = products.length;
@@ -68,6 +102,27 @@ function App() {
   useEffect(() => {
     rehydratedRef.current = rehydrated;
   }, [rehydrated]);
+
+  useEffect(() => {
+    lastKnownProductsSyncAtRef.current = Math.max(
+      toMs(lastProductsSyncAt),
+      toMs(lastAppliedSyncAt),
+      lastSocketSyncAtRef.current
+    );
+  }, [lastAppliedSyncAt, lastProductsSyncAt]);
+
+  useEffect(() => {
+    if (!rehydrated || !products.length || firstProductsVisibleMetricSentRef.current) {
+      return;
+    }
+
+    firstProductsVisibleMetricSentRef.current = true;
+    const now = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+    emitProductsTimingMetric("time-to-products-visible", now - appBootPerfRef.current, {
+      source: "rehydrated-products",
+      productsCount: products.length,
+    });
+  }, [products.length, rehydrated]);
 
   useEffect(() => {
     let didCancel = false;
@@ -79,14 +134,37 @@ function App() {
     }
 
     const loadProducts = async () => {
-      dispatch(setLoading(true));
+      const hasPersistedProducts = products.length > 0;
+      if (hasPersistedProducts && marketplaceRealtimeFlags.instantProductsRenderEnabled) {
+        dispatch(setRefreshing(true));
+      } else {
+        dispatch(setLoading(true));
+      }
+
       try {
         const response = await fetchProducts();
         if (!didCancel) {
-          if (hasSocketSyncedProductsRef.current) {
+          const incomingSyncMs = getPayloadSyncMs(response);
+          const currentSyncMs = Math.max(lastKnownProductsSyncAtRef.current, toMs(lastProductsSyncAt));
+
+          if (hasSocketSyncedProductsRef.current && incomingSyncMs && incomingSyncMs < lastSocketSyncAtRef.current) {
             return;
           }
+
+          if (!shouldApplyIncomingSync({ incomingSyncMs, currentSyncMs })) {
+            return;
+          }
+
+          if (Array.isArray(response) && !response.length && products.length) {
+            return;
+          }
+
           dispatch(setProducts(response));
+          if (incomingSyncMs > 0) {
+            const syncedAt = new Date(incomingSyncMs).toISOString();
+            dispatch(setProductsSyncedAt(syncedAt));
+            lastKnownProductsSyncAtRef.current = incomingSyncMs;
+          }
         }
       } catch (error) {
         if (!didCancel) {
@@ -95,18 +173,20 @@ function App() {
       } finally {
         if (!didCancel) {
           dispatch(setLoading(false));
+          dispatch(setRefreshing(false));
         }
       }
     };
 
-    if (!products.length) {
+    if (!initialProductsFetchDoneRef.current) {
+      initialProductsFetchDoneRef.current = true;
       loadProducts();
     }
 
     return () => {
       didCancel = true;
     };
-  }, [dispatch, products.length, rehydrated]);
+  }, [dispatch, products.length, rehydrated, lastProductsSyncAt]);
 
   // Restore user session on app load
   useEffect(() => {
@@ -134,7 +214,7 @@ function App() {
         clearTimeout(pendingProductsResyncRef.current);
       }
       pendingProductsResyncRef.current = setTimeout(() => {
-        socket.emit("products:sync");
+        socket.emit("products:sync", { correlationId: createCorrelationId("socket-resync") });
       }, 250);
     };
 
@@ -205,29 +285,32 @@ function App() {
       console.error("Cart error:", error.message);
     });
 
-    socket.on("products:synced", (productsPayload) => {
-      const latestPayloadSyncMs = Array.isArray(productsPayload)
-        ? Math.max(
-            0,
-            ...productsPayload.map((item) => new Date(item?.syncedAt || item?.updatedAt || 0).getTime() || 0)
-          )
-        : 0;
+    socket.on("products:synced", (productsPayload, metadata = {}) => {
+      const latestPayloadSyncMs = getPayloadSyncMs(productsPayload, metadata);
+      const currentSyncMs = Math.max(lastKnownProductsSyncAtRef.current, lastSocketSyncAtRef.current);
 
-      if (latestPayloadSyncMs && latestPayloadSyncMs < lastSocketSyncAtRef.current) {
+      if (!shouldApplyIncomingSync({ incomingSyncMs: latestPayloadSyncMs, currentSyncMs })) {
         return;
       }
 
-      hasSocketSyncedProductsRef.current = true;
-      lastSocketSyncAtRef.current = latestPayloadSyncMs || Date.now();
-      dispatch(setProducts(productsPayload));
-      dispatch(setProductsSyncedAt(new Date(lastSocketSyncAtRef.current).toISOString()));
+      if (Array.isArray(productsPayload) && productsPayload.length) {
+        hasSocketSyncedProductsRef.current = true;
+        dispatch(setProducts(productsPayload));
+      }
+
+      const effectiveSyncMs = latestPayloadSyncMs || Date.now();
+      lastSocketSyncAtRef.current = effectiveSyncMs;
+      lastKnownProductsSyncAtRef.current = effectiveSyncMs;
+      dispatch(setProductsSyncedAt(new Date(effectiveSyncMs).toISOString()));
       dispatch(setLoading(false));
+      dispatch(setRefreshing(false));
     });
 
     socket.on("products:error", (error) => {
       console.error("Products error:", error.message);
       dispatch(setError(error.message || "Failed to sync products"));
       dispatch(setLoading(false));
+      dispatch(setRefreshing(false));
     });
 
     socket.on("inventory:updated", () => {
@@ -242,7 +325,7 @@ function App() {
       }
 
       if (!productsCountRef.current && !hasSocketSyncedProductsRef.current) {
-        socket.emit("products:sync");
+        socket.emit("products:sync", { correlationId: createCorrelationId("socket-initial") });
       }
     }, 1200);
 

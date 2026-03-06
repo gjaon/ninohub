@@ -6,6 +6,7 @@ import {
   searchProducts,
   setProducts,
   setLoading,
+  setRefreshing,
   setError,
 } from "../redux/slices/productsSlice";
 import ProductCard from "../components/ProductCard";
@@ -59,7 +60,11 @@ const Products = () => {
     }
 
     setIsRefreshing(true);
-    dispatch(setLoading(true));
+    if (filteredItems.length) {
+      dispatch(setRefreshing(true));
+    } else {
+      dispatch(setLoading(true));
+    }
     try {
       const latestProducts = await fetchProducts();
       dispatch(setProducts(latestProducts));
@@ -69,6 +74,7 @@ const Products = () => {
     } finally {
       setIsRefreshing(false);
       dispatch(setLoading(false));
+      dispatch(setRefreshing(false));
     }
   };
 

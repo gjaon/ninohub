@@ -89,11 +89,6 @@ const LaunchCountdown = () => {
     return null;
   }
 
-  // If launch date has passed, show nothing
-  if (!isPreLaunch) {
-    return null;
-  }
-
   return (
     <div className="launch-countdown-overlay">
       <div className="launch-countdown-wrapper">

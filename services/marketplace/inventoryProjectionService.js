@@ -27,6 +27,8 @@ const getInFlightState = () => ({
   lastFailureReason: syncFailureState.lastFailureReason,
 });
 
+const getProjectionSyncState = () => getInFlightState();
+
 const recordSyncMetricSafe = async (key, labels = {}, increment = 1) => {
   try {
     await recordMetric(key, labels, increment);
@@ -889,6 +891,7 @@ module.exports = {
   syncInventoryProjectionIfStale,
   refreshListingProjectionFromWebhook,
   getProjectedProducts,
+  getProjectionSyncState,
   __testables: {
     consolidateProjectedRows,
     normalizeDiscountSnapshot,

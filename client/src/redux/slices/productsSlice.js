@@ -14,7 +14,9 @@ const initialState = {
   selectedCategory: "All",
   searchTerm: "",
   loading: false,
+  refreshing: false,
   error: null,
+  lastAppliedSyncAt: null,
 };
 
 const normalizeSearchText = (item = {}) => {
@@ -60,13 +62,25 @@ const productsSlice = createSlice({
   initialState,
   reducers: {
     setProducts: (state, action) => {
-      state.items = action.payload;
+      const payloadItems = Array.isArray(action.payload) ? action.payload : action.payload?.items;
+      state.items = Array.isArray(payloadItems) ? payloadItems : [];
       state.categories = Array.from(
-        new Set(action.payload.map((item) => item.category).filter(Boolean))
+        new Set(state.items.map((item) => item.category).filter(Boolean))
       ).sort();
       applyFilters(state);
       state.loading = false;
+      state.refreshing = false;
       state.error = null;
+
+      const incomingSyncAt =
+        (Array.isArray(state.items)
+          ? state.items
+              .map((item) => new Date(item?.syncedAt || item?.updatedAt || 0).getTime() || 0)
+              .sort((a, b) => b - a)[0]
+          : 0) || 0;
+      if (incomingSyncAt > 0) {
+        state.lastAppliedSyncAt = new Date(incomingSyncAt).toISOString();
+      }
     },
     filterByCategory: (state, action) => {
       state.selectedCategory = action.payload;
@@ -78,10 +92,20 @@ const productsSlice = createSlice({
     },
     setLoading: (state, action) => {
       state.loading = action.payload;
+      if (action.payload) {
+        state.refreshing = false;
+      }
+    },
+    setRefreshing: (state, action) => {
+      state.refreshing = action.payload;
+      if (action.payload) {
+        state.loading = false;
+      }
     },
     setError: (state, action) => {
       state.error = action.payload;
       state.loading = false;
+      state.refreshing = false;
     },
   },
 });
@@ -91,6 +115,7 @@ export const {
   filterByCategory,
   searchProducts,
   setLoading,
+  setRefreshing,
   setError,
 } = productsSlice.actions;
 export default productsSlice.reducer;

@@ -119,6 +119,14 @@ app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
 });
+
+app.use((req, res, next) => {
+  const incoming = String(req.headers["x-correlation-id"] || "").trim();
+  const correlationId = incoming || uuidv4();
+  req.correlationId = correlationId;
+  res.setHeader("x-correlation-id", correlationId);
+  next();
+});
 // app.use(
 //   cors({
 //     origin: ["http://localhost:3000", "https://inventory-software.onrender.com"],
@@ -174,6 +182,8 @@ const loadProductsWithEffectiveAvailability = async ({
   excludeCartId = null,
   refreshIfStale = true,
   availabilityUseCache = true,
+  allowEmptyOnColdStart = false,
+  correlationId = null,
 } = {}) => {
   const {
     __testables: { toFrontendProduct },
@@ -195,17 +205,36 @@ const loadProductsWithEffectiveAvailability = async ({
       syncInventoryProjectionIfStale({
         trigger: "on-demand-socket-products-stale-refresh",
         maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
+        correlationId,
       }).catch((error) => {
         console.warn("[socket:products:sync] stale refresh skipped", error.message);
       });
     }
 
     if (!projected.length) {
+      if (marketplaceConfig.instantProductsRenderEnabled && allowEmptyOnColdStart) {
+        recordMetric("marketplace.products.read.path", {
+          source: "socket-products-sync",
+          cachePath: "cold-start-empty-async-warm",
+        }).catch(() => null);
+        syncInventoryProjectionIfStale({
+          trigger: "on-demand-socket-products-sync-cold-start-warm",
+          maxAgeMs: 0,
+          correlationId,
+        }).catch((error) => {
+          console.warn("[socket:products:sync] cold-start warm skipped", error.message);
+        });
+        return [];
+      }
+
       recordMetric("marketplace.products.read.path", {
         source: "socket-products-sync",
         cachePath: "cold-start-sync",
       }).catch(() => null);
-      await syncInventoryProjection({ trigger: "on-demand-socket-products-sync-cold-start" });
+      await syncInventoryProjection({
+        trigger: "on-demand-socket-products-sync-cold-start",
+        correlationId,
+      });
       projected = await getProjectedProducts();
     } else {
       recordMetric("marketplace.products.read.path", {
@@ -720,16 +749,29 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("products:sync", async () => {
+  socket.on("products:sync", async (payload = {}) => {
     try {
-      const productsWithAvailability = await loadProductsWithEffectiveAvailability();
-      if (!productsWithAvailability.length) {
-        socket.emit("products:error", {
-          message: "Provider inventory is unavailable. No projected products found.",
-        });
-        return;
-      }
-      socket.emit("products:synced", productsWithAvailability);
+      const correlationId = String(payload?.correlationId || "").trim() || uuidv4();
+      const productsWithAvailability = await loadProductsWithEffectiveAvailability({
+        allowEmptyOnColdStart: true,
+        correlationId,
+      });
+      const syncedAt = productsWithAvailability.length
+        ? new Date(
+            Math.max(
+              0,
+              ...productsWithAvailability.map(
+                (item) => new Date(item?.syncedAt || item?.updatedAt || 0).getTime() || 0
+              )
+            )
+          ).toISOString()
+        : null;
+      socket.emit("products:synced", productsWithAvailability, {
+        correlationId,
+        syncedAt,
+        source: productsWithAvailability.length ? "projection-cache" : "projection-cache-empty",
+        status: productsWithAvailability.length ? "ok" : "warming",
+      });
     } catch (error) {
       console.error("products:sync error:", error);
       socket.emit("products:error", { message: "Failed to sync products" });
@@ -1051,6 +1093,48 @@ app.use(errorHandler);
 
 // Connect to DB and start server
 const PORT = process.env.PORT || 5001;
+
+const startMarketplaceProjectionWarmSync = () => {
+  if (!marketplaceConfig.internalUiEnabled) {
+    return;
+  }
+
+  const maxAttempts = Math.max(1, Number(process.env.MARKETPLACE_WARM_SYNC_MAX_ATTEMPTS || 4));
+  const baseDelayMs = Math.max(1000, Number(process.env.MARKETPLACE_WARM_SYNC_BASE_DELAY_MS || 2500));
+  let attempt = 0;
+
+  const run = async () => {
+    attempt += 1;
+    const correlationId = uuidv4();
+
+    try {
+      await syncInventoryProjectionIfStale({
+        trigger: "startup-warm-sync",
+        maxAgeMs: 0,
+        correlationId,
+      });
+      await recordMetric("marketplace.inventory.sync.trigger", {
+        source: "startup-warm-sync",
+        status: "success",
+      });
+    } catch (error) {
+      await recordMetric("marketplace.inventory.sync.trigger", {
+        source: "startup-warm-sync",
+        status: "failed",
+      }).catch(() => null);
+
+      if (attempt < maxAttempts) {
+        const delayMs = Math.min(60000, baseDelayMs * 2 ** (attempt - 1));
+        setTimeout(run, delayMs);
+      } else {
+        console.error("Startup warm sync exhausted retries:", error.message);
+      }
+    }
+  };
+
+  setTimeout(run, 300);
+};
+
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
@@ -1060,5 +1144,7 @@ mongoose
     httpServer.listen(PORT, () => {
       console.log(`Server Running on port ${PORT}`);
     });
+
+    startMarketplaceProjectionWarmSync();
   })
   .catch((err) => console.log(err));

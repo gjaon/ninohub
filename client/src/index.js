@@ -35,4 +35,28 @@ root.render(
 // If you want to start measuring performance in your app, pass a function
 // to log results (for example: reportWebVitals(console.log))
 // or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
-reportWebVitals();
+reportWebVitals((metric) => {
+  if (!metric) {
+    return;
+  }
+
+  if (typeof window !== "undefined") {
+    window.__NINO_PRODUCTS_METRICS__ = window.__NINO_PRODUCTS_METRICS__ || [];
+    window.__NINO_PRODUCTS_METRICS__.push({
+      name: `web-vitals:${metric.name}`,
+      valueMs: Number(metric.value || 0),
+      labels: {
+        id: metric.id,
+      },
+      recordedAt: new Date().toISOString(),
+    });
+  }
+
+  if (metric.name === "FCP") {
+    console.info("[products:timing]", {
+      name: "first-contentful-paint",
+      valueMs: Number(metric.value || 0),
+      id: metric.id,
+    });
+  }
+});
