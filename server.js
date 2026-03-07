@@ -89,6 +89,7 @@ const defaultOrigins = [
         "http://localhost:5173",
       ]),
   "https://www.ninohub.com",
+  "https://ninohub.onrender.com",
 ];
 const parseOrigins = (origins) =>
   (origins || "")
