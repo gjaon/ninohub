@@ -73,7 +73,7 @@ const resolveAuthHeader = async ({ forceRefresh = false } = {}) => {
 
   if (!integrationKeySecret && integrationKeyId) {
     throw new Error(
-      "MARKETPLACE_INTEGRATION_KEY_SECRET (or MARKETPLACE_PROVIDER_API_SECRET) is required when key ID is configured"
+      "MARKETPLACE_INTEGRATION_KEY_SECRET is required when MARKETPLACE_INTEGRATION_KEY_ID is configured"
     );
   }
 

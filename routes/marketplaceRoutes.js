@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const protect = require("../middleware/authMiddleware");
+const { requireAdmin } = require("../middleware/adminMiddleware");
 const { requireFlag, requireAnyFlag } = require("../middleware/featureFlags");
 const { requireOriginAllowlist } = require("../middleware/originAllowlist");
 const { requirePartnerAuth } = require("../middleware/partnerAuthMiddleware");
@@ -39,6 +40,7 @@ router.post(
   "/internal/sync-products",
   requireFlag("internalUiEnabled"),
   protect,
+  requireAdmin,
   triggerInventorySync
 );
 
@@ -59,6 +61,7 @@ router.post(
 router.post(
   "/checkout/verify",
   requireAnyFlag(["internalUiEnabled", "publicApiEnabled"]),
+  protect,
   verifyAndFinalizeMarketplaceCheckout
 );
 
@@ -87,6 +90,7 @@ router.get(
   "/internal/metrics",
   requireFlag("internalUiEnabled"),
   protect,
+  requireAdmin,
   getMarketplaceMetrics
 );
 
@@ -94,6 +98,7 @@ router.get(
   "/internal/webhook-registration-health",
   requireFlag("internalUiEnabled"),
   protect,
+  requireAdmin,
   getMarketplaceWebhookRegistrationHealth
 );
 

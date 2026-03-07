@@ -4,7 +4,7 @@ const PublicApiCredential = require("../../models/publicApiCredentialModel");
 const PublicRefreshSession = require("../../models/publicRefreshSessionModel");
 const { decrypt, hashValue } = require("./cryptoService");
 
-const getPartnerJwtSecret = () => process.env.PUBLIC_PARTNER_JWT_SECRET || process.env.JWT_SECRET;
+const getPartnerJwtSecret = () => process.env.PUBLIC_PARTNER_JWT_SECRET;
 
 const issuePartnerSession = async ({ clientId, clientSecret, origin }) => {
   const credential = await PublicApiCredential.findOne({ clientId, isActive: true });

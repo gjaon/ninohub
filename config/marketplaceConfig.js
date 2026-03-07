@@ -47,9 +47,9 @@ const normalizeIntegrationPath = ({ basePath, candidatePath, fallbackPath }) => 
 const getMarketplaceConfig = () => {
   const isProduction = process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
   const defaultSafeRollout = !isProduction;
-  const publicApiEnabled = parseBooleanFlag(process.env.MARKETPLACE_PUBLIC_API_ENABLED) || true;
-  const webhooksEnabled = parseBooleanFlag(process.env.MARKETPLACE_WEBHOOKS_ENABLED) || true;
-  const internalUiEnabled = parseBooleanFlag(process.env.MARKETPLACE_INTERNAL_UI_ENABLED) || true ;
+  const publicApiEnabled = parseOptionalBoolean(process.env.MARKETPLACE_PUBLIC_API_ENABLED) ?? false;
+  const webhooksEnabled = parseOptionalBoolean(process.env.MARKETPLACE_WEBHOOKS_ENABLED) ?? false;
+  const internalUiEnabled = parseOptionalBoolean(process.env.MARKETPLACE_INTERNAL_UI_ENABLED) ?? false;
   const adaptivePollingEnabled =
     parseOptionalBoolean(process.env.MARKETPLACE_ADAPTIVE_POLLING_ENABLED) ?? defaultSafeRollout;
   const realtimeEventDedupeEnabled =
@@ -81,12 +81,12 @@ const getMarketplaceConfig = () => {
 
   if (publicApiEnabled || webhooksEnabled || internalUiEnabled) {
     assert(
-      process.env.PUBLIC_PARTNER_JWT_SECRET || process.env.JWT_SECRET,
-      "PUBLIC_PARTNER_JWT_SECRET or JWT_SECRET is required when marketplace features are enabled"
+      process.env.PUBLIC_PARTNER_JWT_SECRET,
+      "PUBLIC_PARTNER_JWT_SECRET is required when marketplace features are enabled"
     );
     assert(
-      process.env.MARKETPLACE_SECRET_ENCRYPTION_KEY || process.env.JWT_SECRET,
-      "MARKETPLACE_SECRET_ENCRYPTION_KEY or JWT_SECRET is required when marketplace features are enabled"
+      process.env.MARKETPLACE_SECRET_ENCRYPTION_KEY,
+      "MARKETPLACE_SECRET_ENCRYPTION_KEY is required when marketplace features are enabled"
     );
   }
 
@@ -101,7 +101,7 @@ const getMarketplaceConfig = () => {
   const partnerOrigins = parseList(process.env.MARKETPLACE_PARTNER_ALLOWED_ORIGINS);
   const configuredInventoryPaths = parseList(process.env.MARKETPLACE_PROVIDER_INVENTORY_PATHS);
   const integrationBaseUrl =
-    (process.env.MARKETPLACE_INTEGRATION_BASE_URL || process.env.MARKETPLACE_PROVIDER_BASE_URL || "http://localhost:4000").trim();
+    (process.env.MARKETPLACE_INTEGRATION_BASE_URL || "http://localhost:4000").trim();
   const integrationBasePath = ensureLeadingSlash(
     trimSlashes(process.env.MARKETPLACE_INTEGRATION_BASE_PATH || "/api/public/v1/marketplace")
   );
@@ -138,15 +138,11 @@ const getMarketplaceConfig = () => {
   const integrationKeyId =
     (
       process.env.MARKETPLACE_INTEGRATION_KEY_ID ||
-      process.env.MARKETPLACE_PROVIDER_KEY_ID ||
-      process.env.MARKETPLACE_PROVIDER_API_KEY ||
       ""
     ).trim();
   const integrationKeySecret =
     (
       process.env.MARKETPLACE_INTEGRATION_KEY_SECRET ||
-      process.env.MARKETPLACE_PROVIDER_KEY_SECRET ||
-      process.env.MARKETPLACE_PROVIDER_API_SECRET ||
       ""
     ).trim();
   const integrationSeedRefreshToken = (process.env.MARKETPLACE_INTEGRATION_REFRESH_TOKEN || "").trim();
@@ -156,7 +152,7 @@ const getMarketplaceConfig = () => {
   const providerInventoryPaths = configuredInventoryPaths.length
     ? configuredInventoryPaths
     : [
-        process.env.MARKETPLACE_PROVIDER_INVENTORY_PATH || integrationListingsPath,
+        integrationListingsPath,
         "/api/inventory", 
         "/inventory",
         "/products",
@@ -182,8 +178,6 @@ const getMarketplaceConfig = () => {
     integrationHoldsPath,
     integrationOrdersPath,
     integrationWebhookEndpointsPath,
-    providerBaseUrl: process.env.MARKETPLACE_PROVIDER_BASE_URL || "",
-    providerApiKey: process.env.MARKETPLACE_PROVIDER_API_KEY || "",
     providerBearerToken,
     providerInventoryPaths: [...new Set(providerInventoryPaths.map((path) => path.trim()).filter(Boolean))],
     providerFallbackProbeEnabled,
@@ -227,7 +221,7 @@ const shouldUseProviderProducts = () => {
     config.integrationBaseUrl &&
       ((config.integrationKeyId && config.integrationKeySecret) || config.integrationSeedRefreshToken)
   );
-  const hasApiKeyIntegration = Boolean(config.providerBaseUrl && config.providerBearerToken);
+  const hasApiKeyIntegration = Boolean(config.integrationBaseUrl && config.providerBearerToken);
   const hasProviderIntegration = hasApiKeyIntegration || hasTokenBasedIntegration;
   return config.internalUiEnabled || hasProviderIntegration;
 };

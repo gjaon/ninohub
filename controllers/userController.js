@@ -10,7 +10,7 @@ const generateAccessToken = (id) => {
 };
 
 const generateRefreshToken = (id) => {
-  const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+  const refreshSecret = process.env.JWT_REFRESH_SECRET;
   return jwt.sign({ id }, refreshSecret, { expiresIn: "7d" });
 };
 
@@ -230,7 +230,7 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
     throw new Error("Refresh token missing");
   }
 
-  const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+  const refreshSecret = process.env.JWT_REFRESH_SECRET;
   const verified = jwt.verify(refreshToken, refreshSecret);
   const user = await User.findById(verified.id);
 

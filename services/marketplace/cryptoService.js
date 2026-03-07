@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 
 const getKey = () => {
-  const secret = process.env.MARKETPLACE_SECRET_ENCRYPTION_KEY || process.env.JWT_SECRET || "";
+  const secret = process.env.MARKETPLACE_SECRET_ENCRYPTION_KEY || "";
   return crypto.createHash("sha256").update(secret).digest();
 };
 

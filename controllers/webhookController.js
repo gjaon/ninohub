@@ -41,11 +41,18 @@ const getRawBodyString = (req) => {
 const verifyPaystackSignature = (req) => {
   const signature = req.get("x-paystack-signature") || "";
   const secret = process.env.PAYSTACK_SECRET_KEY || "";
+  if (!secret) return false;
+
   const digest = crypto
     .createHmac("sha512", secret)
     .update(getRawBodyString(req))
     .digest("hex");
-  return signature && digest === signature;
+
+  if (!signature || signature.length !== digest.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
 };
 
 const verifyProviderSignature = (req) => {

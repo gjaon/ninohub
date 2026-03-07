@@ -109,7 +109,6 @@ const orderSchema = mongoose.Schema(
 // Index for faster queries
 orderSchema.index({ userId: 1 });
 orderSchema.index({ sessionId: 1 });
-orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ paystackReference: 1 });
 
 const Order = mongoose.model("Order", orderSchema);

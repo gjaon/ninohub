@@ -2,7 +2,7 @@ import axios from "axios";
 
 // Create axios instance with default config
 // const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5001";
-const API_BASE_URL = process.env.REACT_APP_API_URL || "https://www.ninohub.com";
+const API_BASE_URL = process.env.REACT_APP_API_URL || "https://ninohub.onrender.com/";
 
 export const api = axios.create({
   baseURL: API_BASE_URL,

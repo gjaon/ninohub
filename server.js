@@ -76,11 +76,18 @@ app.use(
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+const isProduction =
+  process.env.NODE_ENV === "production" ||
+  process.env.NODE_ENV === "staging";
 const defaultOrigins = [
-  "http://localhost:3001",
-  "http://localhost:3000",
-  "http://localhost:3005",
-  "http://localhost:5173",
+  ...(isProduction
+    ? []
+    : [
+        "http://localhost:3001",
+        "http://localhost:3000",
+        "http://localhost:3005",
+        "http://localhost:5173",
+      ]),
   "https://www.ninohub.com",
 ];
 const parseOrigins = (origins) =>
@@ -90,16 +97,11 @@ const parseOrigins = (origins) =>
     .filter(Boolean);
 const envOrigins = [
   ...parseOrigins(process.env.CLIENT_ORIGIN),
-  ...parseOrigins(process.env.FRONTEND_ORIGIN),
-  ...parseOrigins(process.env.FRONTEND_URL),
 ];
 const allowedOrigins = [
   ...new Set([...defaultOrigins, ...envOrigins, ...marketplaceConfig.originAllowlist]),
 ];
 const allowAllOrigins = allowedOrigins.includes("*");
-const isProduction =
-  process.env.NODE_ENV === "production" ||
-  process.env.NODE_ENV === "staging";
 
 const corsOptions = {
   origin: (origin, callback) => {
