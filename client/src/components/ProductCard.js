@@ -1,13 +1,21 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { useDispatch } from "react-redux";
 import { toast } from "sonner";
 import useCartSocket from "../hooks/useCartSocket";
+import {
+  addToCart,
+  beginOptimisticOperation,
+  rollbackOptimisticOperation,
+} from "../redux/slices/cartSlice";
+import { marketplaceRealtimeFlags } from "../config/marketplaceRealtimeFlags";
 import { getProductImageUrl } from "../utils/image";
 import { getProductDiscountPercent } from "../utils/pricing";
 import "./ProductCard.css";
 
 const ProductCard = ({ product }) => {
   const navigate = useNavigate();
+  const dispatch = useDispatch();
   const { addToCartSocket } = useCartSocket();
   const [isAdding, setIsAdding] = React.useState(false);
   const displayImage =
@@ -20,6 +28,11 @@ const ProductCard = ({ product }) => {
     ? (product.groupName || product.name)
     : product.name;
   const remainingQuantity = Math.max(0, Number(product?.availableQuantity || 0));
+
+  const createOperationId = React.useCallback(
+    () => `cart-add-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    []
+  );
 
   const handleAddToCart = (e) => {
     e.stopPropagation();
@@ -44,6 +57,31 @@ const ProductCard = ({ product }) => {
       setIsAdding(false);
     }, 8000);
 
+    const operationId = createOperationId();
+    if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+      dispatch(beginOptimisticOperation({ operationId }));
+      dispatch(
+        addToCart({
+          id: `${product.id || ""}::${product.variantId || ""}`,
+          lineKey: `${product.id || ""}::${product.variantId || ""}`,
+          productId: product.id,
+          listingId: product.listingId || product.parentGroupId || product.id,
+          name: product.name,
+          price: Number(product.price || 0),
+          image: product.image,
+          selectedImage: product.selectedImage || product.image,
+          variantId: product.variantId || null,
+          variantName: product.variantName || null,
+          parentGroupId: product.parentGroupId || null,
+          groupName: product.groupName || null,
+          originalPrice: Number(product.originalPrice || product.price || 0),
+          discountPercent: Number(product.discountPercent || 0),
+          category: product.category || "",
+          quantity: 1,
+        })
+      );
+    }
+
     const sent = addToCartSocket(product, 1, (result) => {
       clearTimeout(failSafeTimer);
       setIsAdding(false);
@@ -53,14 +91,21 @@ const ProductCard = ({ product }) => {
         return;
       }
 
+      if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+        dispatch(rollbackOptimisticOperation({ operationId }));
+      }
+
       toast.error(result?.message || "Unable to add product to cart. Please try again.");
-    });
+    }, { operationId });
     if (sent) {
       return;
     }
 
     clearTimeout(failSafeTimer);
     setIsAdding(false);
+    if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+      dispatch(rollbackOptimisticOperation({ operationId }));
+    }
     toast.error("Unable to add product to cart. Please try again.");
   };
 

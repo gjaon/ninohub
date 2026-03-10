@@ -3,6 +3,12 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSelector, useDispatch } from "react-redux";
 import { toast } from "sonner";
 import { startCustomization } from "../redux/slices/customizationSlice";
+import {
+  addToCart,
+  beginOptimisticOperation,
+  rollbackOptimisticOperation,
+} from "../redux/slices/cartSlice";
+import { marketplaceRealtimeFlags } from "../config/marketplaceRealtimeFlags";
 import { calculatePrice, getProductDiscountPercent, resolveOriginalPrice } from "../utils/pricing";
 import useCartSocket from "../hooks/useCartSocket";
 import { getProductImageUrl } from "../utils/image";
@@ -72,6 +78,7 @@ const ProductDetail = () => {
   const [selectedImage, setSelectedImage] = useState("");
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth <= 768);
   const [isMobilePreviewOpen, setIsMobilePreviewOpen] = useState(false);
+  const [isAddingToCart, setIsAddingToCart] = useState(false);
   const variantSectionRef = useRef(null);
   const { addToCartSocket } = useCartSocket();
   const detailTitle = product?.listingType === "group"
@@ -89,6 +96,11 @@ const ProductDetail = () => {
   );
   const productAvailableQuantity = Math.max(0, Number(product?.availableQuantity || 0));
   const selectedVariantAvailableQuantity = Math.max(0, Number(selectedVariant?.availableQuantity || 0));
+
+  const createOperationId = React.useCallback(
+    () => `cart-add-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    []
+  );
 
   useEffect(() => {
     setVariantQuantities({});
@@ -274,11 +286,11 @@ const ProductDetail = () => {
     }
   };
 
-  const emitAddToCart = (cartProduct, itemQuantity) =>
+  const emitAddToCart = (cartProduct, itemQuantity, options = {}) =>
     new Promise((resolve) => {
       const sent = addToCartSocket(cartProduct, itemQuantity, (result) => {
         resolve(result || { ok: false, message: "Unable to add item to cart. Please try again." });
-      });
+      }, options);
 
       if (!sent) {
         resolve({ ok: false, message: "Unable to add item to cart. Please try again." });
@@ -286,8 +298,15 @@ const ProductDetail = () => {
     });
 
   const handleAddToCart = async () => {
+    if (isAddingToCart) {
+      return;
+    }
+
+    setIsAddingToCart(true);
+
     if (product.listingType === "group" && availableVariants.length > 0) {
       if (!selectedVariantEntries.length) {
+        setIsAddingToCart(false);
         toast.error("Please select at least one variant before adding to cart");
         if (variantSectionRef.current) {
           variantSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -314,6 +333,31 @@ const ProductDetail = () => {
         }
 
         const variantDiscountPercent = getProductDiscountPercent(variant);
+        const operationId = createOperationId();
+        if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+          dispatch(beginOptimisticOperation({ operationId }));
+          dispatch(
+            addToCart({
+              id: `${product.id || ""}::${variant?.variantId || variant?.id || ""}`,
+              lineKey: `${product.id || ""}::${variant?.variantId || variant?.id || ""}`,
+              productId: product.id,
+              listingId: product.listingId || product.parentGroupId || product.id,
+              name: product.name,
+              price: Number(variant?.price || product.price || 0),
+              image: variant?.image || product.image,
+              selectedImage: variant?.image || variant?.imageUrl || product.selectedImage || product.image,
+              variantId: variant?.variantId || variant?.id || null,
+              variantName: variant?.name || null,
+              parentGroupId: product.parentGroupId || product.groupId || null,
+              groupName: product.groupName || product.name || null,
+              originalPrice: Number(variant?.originalPrice || product.originalPrice || variant?.price || product.price || 0),
+              discountPercent: Number(variantDiscountPercent || productDiscountPercent || 0),
+              category: product.category || "",
+              quantity: Number(selectedQty) || 1,
+            })
+          );
+        }
+
         const variantImage =
           variant?.image
           || variant?.imageUrl
@@ -342,10 +386,13 @@ const ProductDetail = () => {
           selectedImage: variantImage,
         };
 
-        const result = await emitAddToCart(cartProduct, Number(selectedQty) || 1);
+        const result = await emitAddToCart(cartProduct, Number(selectedQty) || 1, { operationId });
         if (result?.ok) {
           successCount += 1;
         } else {
+          if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+            dispatch(rollbackOptimisticOperation({ operationId }));
+          }
           errors.push(result?.message || "Unable to add some variants to cart.");
         }
       }
@@ -358,12 +405,45 @@ const ProductDetail = () => {
       if (errors.length) {
         toast.error(errors[0]);
       }
+      setIsAddingToCart(false);
       return;
     }
 
     if (quantity > productAvailableQuantity) {
+      setIsAddingToCart(false);
       toast.error(`Only ${productAvailableQuantity} available for this product`);
       return;
+    }
+
+    const operationId = createOperationId();
+    if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+      dispatch(beginOptimisticOperation({ operationId }));
+      dispatch(
+        addToCart({
+          id: `${product.id || ""}::${selectedVariant?.variantId || selectedVariant?.id || product.variantId || ""}`,
+          lineKey: `${product.id || ""}::${selectedVariant?.variantId || selectedVariant?.id || product.variantId || ""}`,
+          productId: product.id,
+          listingId: product.listingId || product.parentGroupId || product.id,
+          name: product.name,
+          price: Number(selectedVariant?.price || product.price || 0),
+          image: selectedVariant?.image || selectedVariant?.imageUrl || product.image,
+          selectedImage:
+            selectedImage
+            || selectedVariant?.image
+            || selectedVariant?.imageUrl
+            || product.selectedImage
+            || product.primaryImage
+            || product.image,
+          variantId: selectedVariant?.variantId || selectedVariant?.id || product.variantId || null,
+          variantName: selectedVariant?.name || product.variantName || null,
+          parentGroupId: product.parentGroupId || product.groupId || null,
+          groupName: product.groupName || null,
+          originalPrice: Number(selectedVariant?.originalPrice || product.originalPrice || selectedVariant?.price || product.price || 0),
+          discountPercent: Number(selectedVariantDiscountPercent || productDiscountPercent || 0),
+          category: product.category || "",
+          quantity,
+        })
+      );
     }
 
     const cartProduct = {
@@ -385,14 +465,20 @@ const ProductDetail = () => {
         || product.image,
     };
 
-    const result = await emitAddToCart(cartProduct, quantity);
+    const result = await emitAddToCart(cartProduct, quantity, { operationId });
     if (result?.ok) {
+      setIsAddingToCart(false);
       toast.success(
         `${quantity} ${quantity > 1 ? "items" : "item"} added to cart!`
       );
       return;
     }
 
+    if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+      dispatch(rollbackOptimisticOperation({ operationId }));
+    }
+
+    setIsAddingToCart(false);
     toast.error(result?.message || "Unable to add item to cart. Please try again.");
   };
 
@@ -619,8 +705,8 @@ const ProductDetail = () => {
           )}
 
           <div className="product-actions">
-            <button className="btn-add-cart" onClick={handleAddToCart} disabled={product.listingType !== "group" && productAvailableQuantity < 1}>
-              Add to Cart
+            <button className="btn-add-cart" onClick={handleAddToCart} disabled={(product.listingType !== "group" && productAvailableQuantity < 1) || isAddingToCart}>
+              {isAddingToCart ? "Adding..." : "Add to Cart"}
             </button>
             <button
               className={`btn-customize ${

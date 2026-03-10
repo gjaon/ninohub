@@ -4,7 +4,14 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import useCartSocket from "../hooks/useCartSocket";
 import { getProductImageUrl } from "../utils/image";
-import { markExpired } from "../redux/slices/cartSlice";
+import {
+  markExpired,
+  beginOptimisticOperation,
+  rollbackOptimisticOperation,
+  removeFromCart,
+  updateQuantity,
+} from "../redux/slices/cartSlice";
+import { marketplaceRealtimeFlags } from "../config/marketplaceRealtimeFlags";
 import {
   CHECKOUT_SHIPPING_FEE_NGN,
   CHECKOUT_VAT_PERCENT_LABEL,
@@ -38,6 +45,52 @@ const Cart = () => {
   const { addToCartSocket, removeFromCartSocket, updateQuantitySocket, updateVariantSocket } = useCartSocket();
   const [isReadding, setIsReadding] = React.useState(false);
   const [isOpeningCheckout, setIsOpeningCheckout] = React.useState(false);
+  const [pendingLineOperations, setPendingLineOperations] = React.useState({});
+
+  useEffect(() => {
+    const activeKeys = new Set(items.map((item) => String(item.lineKey || item.id || "")));
+    setPendingLineOperations((current) => {
+      const next = { ...current };
+      let changed = false;
+      Object.keys(next).forEach((lineKey) => {
+        if (!activeKeys.has(String(lineKey || ""))) {
+          delete next[lineKey];
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [items]);
+
+  const createOperationId = React.useCallback(
+    () => `cart-op-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    []
+  );
+
+  const setLinePending = React.useCallback((lineKey, operationId) => {
+    setPendingLineOperations((current) => ({
+      ...current,
+      [String(lineKey || "")]: operationId,
+    }));
+  }, []);
+
+  const clearLinePending = React.useCallback((lineKey, operationId = "") => {
+    const normalizedLineKey = String(lineKey || "");
+    const normalizedOperationId = String(operationId || "");
+    setPendingLineOperations((current) => {
+      const existingOpId = String(current[normalizedLineKey] || "");
+      if (normalizedOperationId && existingOpId && existingOpId !== normalizedOperationId) {
+        return current;
+      }
+      if (!existingOpId) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[normalizedLineKey];
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const socket = getSocket();
@@ -73,8 +126,38 @@ const Cart = () => {
       action: {
         label: "Remove",
         onClick: () => {
-          // Only emit WebSocket event - let socket response update Redux
-          removeFromCartSocket(item.lineKey || item.id, item.productId, item.variantId || null);
+          const lineKey = item.lineKey || item.id;
+          const operationId = createOperationId();
+
+          if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+            dispatch(beginOptimisticOperation({ operationId }));
+            dispatch(removeFromCart(lineKey));
+          }
+
+          setLinePending(lineKey, operationId);
+          const sent = removeFromCartSocket(
+            lineKey,
+            item.productId,
+            item.variantId || null,
+            (response = {}) => {
+              if (response?.accepted || response?.ok) {
+                setTimeout(() => clearLinePending(lineKey, operationId), 600);
+                return;
+              }
+
+              if (!response?.ok && marketplaceRealtimeFlags.optimisticCartEnabled) {
+                dispatch(rollbackOptimisticOperation({ operationId }));
+                clearLinePending(lineKey, operationId);
+              }
+            },
+            { operationId }
+          );
+
+          if (!sent && marketplaceRealtimeFlags.optimisticCartEnabled) {
+            dispatch(rollbackOptimisticOperation({ operationId }));
+            clearLinePending(lineKey, operationId);
+          }
+
           toast.success("Item removed from cart!");
         },
       },
@@ -100,8 +183,47 @@ const Cart = () => {
         }
       }
 
-      // Only emit WebSocket event - let socket response update Redux
-      updateQuantitySocket(item.lineKey || item.id, newQuantity, item.productId, item.variantId || null);
+      const lineKey = item.lineKey || item.id;
+      const operationId = createOperationId();
+
+      if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+        dispatch(beginOptimisticOperation({ operationId }));
+        dispatch(updateQuantity({ id: lineKey, quantity: newQuantity }));
+      }
+
+      setLinePending(lineKey, operationId);
+      const sent = updateQuantitySocket(
+        lineKey,
+        newQuantity,
+        item.productId,
+        item.variantId || null,
+        (response = {}) => {
+          if (response?.accepted || response?.ok) {
+            setTimeout(() => clearLinePending(lineKey, operationId), 600);
+            return;
+          }
+
+          if (!response?.ok && marketplaceRealtimeFlags.optimisticCartEnabled) {
+            dispatch(rollbackOptimisticOperation({ operationId }));
+          }
+
+          if (!response?.ok) {
+            clearLinePending(lineKey, operationId);
+          }
+        },
+        { operationId }
+      );
+
+      if (!sent) {
+        if (marketplaceRealtimeFlags.optimisticCartEnabled) {
+          dispatch(rollbackOptimisticOperation({ operationId }));
+        }
+        clearLinePending(lineKey, operationId);
+      }
+
+      setTimeout(() => {
+        clearLinePending(lineKey, operationId);
+      }, 10000);
     }
   };
 
@@ -326,16 +448,23 @@ const Cart = () => {
 
               <div className="item-quantity">
                 <button
-                  disabled={isExpired}
+                  disabled={isExpired || Boolean(pendingLineOperations[item.lineKey || item.id])}
                   onClick={() =>
                     handleQuantityChange(item, item.quantity - 1)
                   }
                 >
                   -
                 </button>
-                <span>{item.quantity}</span>
+                <span>
+                  {item.quantity}
+                  {pendingLineOperations[item.lineKey || item.id] ? " ..." : ""}
+                </span>
                 <button
-                  disabled={isExpired || resolveEffectiveAvailableForItem(item) < 1}
+                  disabled={
+                    isExpired
+                    || resolveEffectiveAvailableForItem(item) < 1
+                    || Boolean(pendingLineOperations[item.lineKey || item.id])
+                  }
                   onClick={() =>
                     handleQuantityChange(item, item.quantity + 1)
                   }
@@ -381,7 +510,7 @@ const Cart = () => {
 
               <button
                 className="remove-btn"
-                disabled={isExpired}
+                disabled={isExpired || Boolean(pendingLineOperations[item.lineKey || item.id])}
                 onClick={() => handleRemove(item)}
               >
                 ×

@@ -57,6 +57,11 @@ const getMarketplaceConfig = () => {
   const adminModuleEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MODULE_ENABLED) ?? true;
   const checkoutFallbackEnabled = parseOptionalBoolean(process.env.MARKETPLACE_CHECKOUT_FALLBACK_ENABLED) ?? true;
   const adminMessagingEnabled = parseOptionalBoolean(process.env.MARKETPLACE_ADMIN_MESSAGING_ENABLED) ?? true;
+  const cartFastAckEnabled = parseOptionalBoolean(process.env.MARKETPLACE_CART_FAST_ACK_ENABLED) ?? true;
+  const inventoryBroadcastCoalescingEnabled =
+    parseOptionalBoolean(process.env.MARKETPLACE_INVENTORY_BROADCAST_COALESCING_ENABLED) ?? true;
+  const socketStaleRefreshThrottleEnabled =
+    parseOptionalBoolean(process.env.MARKETPLACE_SOCKET_STALE_REFRESH_THROTTLE_ENABLED) ?? true;
   const instantProductsRenderEnabled = true;
   const paystackMode = (process.env.PAYSTACK_MODE || "test").trim().toLowerCase();
 
@@ -204,6 +209,9 @@ const getMarketplaceConfig = () => {
     adminModuleEnabled,
     checkoutFallbackEnabled,
     adminMessagingEnabled,
+    cartFastAckEnabled,
+    inventoryBroadcastCoalescingEnabled,
+    socketStaleRefreshThrottleEnabled,
     instantProductsRenderEnabled,
     adaptivePollingEnabled,
     realtimeEventDedupeEnabled,

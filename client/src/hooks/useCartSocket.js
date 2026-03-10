@@ -3,10 +3,11 @@ import { getSocket, initializeSocket } from "../services/socket";
 export const useCartSocket = () => {
   const resolveSocket = () => getSocket() || initializeSocket();
 
-  const addToCartSocket = (product, quantity = 1, onResult) => {
+  const addToCartSocket = (product, quantity = 1, onResult, options = {}) => {
     const socket = resolveSocket();
     if (socket && socket.connected) {
       socket.emit("cart:add", {
+        operationId: options?.operationId || null,
         product: {
           id: product.id,
           name: product.name,
@@ -38,30 +39,48 @@ export const useCartSocket = () => {
     return false;
   };
 
-  const removeFromCartSocket = (lineKey, productId, variantId = null) => {
+  const removeFromCartSocket = (lineKey, productId, variantId = null, onResult, options = {}) => {
     const socket = resolveSocket();
     if (socket) {
       socket.emit("cart:remove", {
+        operationId: options?.operationId || null,
         lineKey,
         productId,
         variantId,
+      }, (response = {}) => {
+        if (typeof onResult === "function") {
+          onResult(response);
+        }
       });
       return true;
+    }
+
+    if (typeof onResult === "function") {
+      onResult({ ok: false, message: "Connection unavailable. Please retry." });
     }
 
     return false;
   };
 
-  const updateQuantitySocket = (lineKey, quantity, productId, variantId = null) => {
+  const updateQuantitySocket = (lineKey, quantity, productId, variantId = null, onResult, options = {}) => {
     const socket = resolveSocket();
     if (socket) {
       socket.emit("cart:updateQuantity", {
+        operationId: options?.operationId || null,
         lineKey,
         productId,
         variantId,
         quantity,
+      }, (response = {}) => {
+        if (typeof onResult === "function") {
+          onResult(response);
+        }
       });
       return true;
+    }
+
+    if (typeof onResult === "function") {
+      onResult({ ok: false, message: "Connection unavailable. Please retry." });
     }
 
     return false;
@@ -75,10 +94,11 @@ export const useCartSocket = () => {
     nextVariantName,
     nextPrice,
     nextImage,
-  }) => {
+  }, onResult, options = {}) => {
     const socket = resolveSocket();
     if (socket) {
       socket.emit("cart:updateVariant", {
+        operationId: options?.operationId || null,
         current: {
           lineKey,
           productId,
@@ -88,8 +108,16 @@ export const useCartSocket = () => {
         nextVariantName,
         nextPrice,
         nextImage,
+      }, (response = {}) => {
+        if (typeof onResult === "function") {
+          onResult(response);
+        }
       });
       return true;
+    }
+
+    if (typeof onResult === "function") {
+      onResult({ ok: false, message: "Connection unavailable. Please retry." });
     }
 
     return false;

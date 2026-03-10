@@ -8,7 +8,11 @@ import {
 import { useDispatch, useSelector } from "react-redux";
 import { setProducts, setLoading, setRefreshing, setError } from "./redux/slices/productsSlice";
 import { setUser } from "./redux/slices/userSlice";
-import { updateCartFromSocket } from "./redux/slices/cartSlice";
+import {
+  updateCartFromSocket,
+  rollbackOptimisticOperation,
+  commitOptimisticOperation,
+} from "./redux/slices/cartSlice";
 import {
   ingestMarketplaceEvent,
   ingestMarketplaceEventsBatch,
@@ -94,6 +98,8 @@ function App() {
     typeof performance !== "undefined" && performance.now ? performance.now() : Date.now()
   );
   const firstProductsVisibleMetricSentRef = React.useRef(false);
+  const productsSyncInFlightRef = React.useRef(false);
+  const lastProductsSyncEmitAtRef = React.useRef(0);
 
   useEffect(() => {
     productsCountRef.current = products.length;
@@ -209,13 +215,52 @@ function App() {
   useEffect(() => {
     const socket = initializeSocket(currentUser?.token);
 
-    const scheduleProductsSync = () => {
+    const emitProductsSync = (reason = "unspecified") => {
+      const now = Date.now();
+      const minIntervalMs = marketplaceRealtimeFlags.productsSyncCoalescingEnabled
+        ? Math.max(0, Number(marketplaceRealtimeFlags.productsSyncMinIntervalMs || 0))
+        : 0;
+      const elapsedMs = now - lastProductsSyncEmitAtRef.current;
+      const waitMs = Math.max(0, minIntervalMs - elapsedMs);
+
+      if (productsSyncInFlightRef.current) {
+        return false;
+      }
+
+      if (waitMs > 0) {
+        if (pendingProductsResyncRef.current) {
+          clearTimeout(pendingProductsResyncRef.current);
+        }
+        pendingProductsResyncRef.current = setTimeout(() => {
+          emitProductsSync(reason);
+        }, waitMs);
+        return false;
+      }
+
+      productsSyncInFlightRef.current = true;
+      lastProductsSyncEmitAtRef.current = Date.now();
+      socket.emit("products:sync", {
+        correlationId: createCorrelationId("socket-resync"),
+        reason,
+      });
+      setTimeout(() => {
+        productsSyncInFlightRef.current = false;
+      }, 10000);
+      return true;
+    };
+
+    const scheduleProductsSync = (reason = "inventory-updated") => {
       if (pendingProductsResyncRef.current) {
         clearTimeout(pendingProductsResyncRef.current);
       }
+
+      const debounceMs = marketplaceRealtimeFlags.productsSyncCoalescingEnabled
+        ? Math.max(0, Number(marketplaceRealtimeFlags.productsSyncDebounceMs || 0))
+        : 0;
+
       pendingProductsResyncRef.current = setTimeout(() => {
-        socket.emit("products:sync", { correlationId: createCorrelationId("socket-resync") });
-      }, 250);
+        emitProductsSync(reason);
+      }, debounceMs);
     };
 
     const shouldResyncProductsForEvent = (eventType) => {
@@ -250,6 +295,9 @@ function App() {
 
     // Listen for cart updates from backend
     socket.on("cart:updated", (cart) => {
+      if (cart?.operationId) {
+        dispatch(commitOptimisticOperation({ operationId: cart.operationId }));
+      }
       dispatch(updateCartFromSocket(cart));
     });
 
@@ -266,7 +314,7 @@ function App() {
       }
 
       if (shouldResyncProductsForEvent(eventEnvelope?.eventType)) {
-        scheduleProductsSync();
+        scheduleProductsSync("business-event");
       }
     });
 
@@ -282,6 +330,7 @@ function App() {
     });
 
     socket.on("cart:error", (error) => {
+      dispatch(rollbackOptimisticOperation({ operationId: error?.operationId }));
       console.error("Cart error:", error.message);
     });
 
@@ -301,6 +350,7 @@ function App() {
       const effectiveSyncMs = latestPayloadSyncMs || Date.now();
       lastSocketSyncAtRef.current = effectiveSyncMs;
       lastKnownProductsSyncAtRef.current = effectiveSyncMs;
+      productsSyncInFlightRef.current = false;
       dispatch(setProductsSyncedAt(new Date(effectiveSyncMs).toISOString()));
       dispatch(setLoading(false));
       dispatch(setRefreshing(false));
@@ -308,13 +358,14 @@ function App() {
 
     socket.on("products:error", (error) => {
       console.error("Products error:", error.message);
+      productsSyncInFlightRef.current = false;
       dispatch(setError(error.message || "Failed to sync products"));
       dispatch(setLoading(false));
       dispatch(setRefreshing(false));
     });
 
     socket.on("inventory:updated", () => {
-      scheduleProductsSync();
+      scheduleProductsSync("inventory-updated");
     });
 
     // Sync cart and products when component mounts
@@ -325,7 +376,7 @@ function App() {
       }
 
       if (!productsCountRef.current && !hasSocketSyncedProductsRef.current) {
-        socket.emit("products:sync", { correlationId: createCorrelationId("socket-initial") });
+        emitProductsSync("initial-bootstrap");
       }
     }, 1200);
 

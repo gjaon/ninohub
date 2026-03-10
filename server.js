@@ -64,6 +64,59 @@ const httpServer = http.createServer(app);
 
 const marketplaceConfig = getMarketplaceConfig();
 const eventDedupeCache = createEventDedupeCache();
+let pendingInventoryUpdatedTimer = null;
+let lastInventoryUpdatedEmitAt = 0;
+let lastSocketStaleRefreshAt = 0;
+
+const cartLatencyBucket = (value) => {
+  const latencyMs = Math.max(0, Number(value || 0));
+  if (latencyMs < 50) return "lt-50ms";
+  if (latencyMs < 100) return "50-99ms";
+  if (latencyMs < 250) return "100-249ms";
+  if (latencyMs < 500) return "250-499ms";
+  if (latencyMs < 1000) return "500-999ms";
+  return "gte-1000ms";
+};
+
+const recordCartActionLatency = async ({ action, outcome, latencyMs }) => {
+  try {
+    await recordMetric("marketplace.cart.action.latency", {
+      action: String(action || "unknown"),
+      outcome: String(outcome || "unknown"),
+      bucket: cartLatencyBucket(latencyMs),
+    });
+  } catch (_error) {
+  }
+};
+
+const emitInventoryUpdatedCoalesced = ({ io, reason = "unknown" }) => {
+  if (!marketplaceConfig.inventoryBroadcastCoalescingEnabled) {
+    io.emit("inventory:updated", { reason, emittedAt: new Date().toISOString() });
+    return;
+  }
+
+  const minIntervalMs = Math.max(
+    100,
+    Number(process.env.MARKETPLACE_INVENTORY_BROADCAST_MIN_INTERVAL_MS || 500)
+  );
+  const now = Date.now();
+  const elapsed = now - lastInventoryUpdatedEmitAt;
+  const waitMs = Math.max(0, minIntervalMs - elapsed);
+
+  if (pendingInventoryUpdatedTimer) {
+    return;
+  }
+
+  pendingInventoryUpdatedTimer = setTimeout(() => {
+    pendingInventoryUpdatedTimer = null;
+    lastInventoryUpdatedEmitAt = Date.now();
+    io.emit("inventory:updated", { reason, emittedAt: new Date().toISOString() });
+    recordMetric("marketplace.products.sync.trigger", {
+      source: "inventory-updated-broadcast",
+      reason: String(reason || "unknown"),
+    }).catch(() => null);
+  }, waitMs);
+};
 
 // Middlewares
 app.use(
@@ -202,16 +255,30 @@ const loadProductsWithEffectiveAvailability = async ({
     let projected = await getProjectedProducts();
 
     if (refreshIfStale && projected.length) {
-      recordMetric("marketplace.inventory.sync.trigger", {
-        source: "socket-stale-refresh",
-      }).catch(() => null);
-      syncInventoryProjectionIfStale({
-        trigger: "on-demand-socket-products-stale-refresh",
-        maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
-        correlationId,
-      }).catch((error) => {
-        console.warn("[socket:products:sync] stale refresh skipped", error.message);
-      });
+      const now = Date.now();
+      const minIntervalMs = Math.max(
+        250,
+        Number(process.env.MARKETPLACE_SOCKET_STALE_REFRESH_MIN_INTERVAL_MS || 5000)
+      );
+      const elapsedMs = now - lastSocketStaleRefreshAt;
+
+      if (!marketplaceConfig.socketStaleRefreshThrottleEnabled || elapsedMs >= minIntervalMs) {
+        lastSocketStaleRefreshAt = now;
+        recordMetric("marketplace.inventory.sync.trigger", {
+          source: "socket-stale-refresh",
+        }).catch(() => null);
+        syncInventoryProjectionIfStale({
+          trigger: "on-demand-socket-products-stale-refresh",
+          maxAgeMs: Number(process.env.MARKETPLACE_PRODUCTS_SYNC_MAX_AGE_MS || 30000),
+          correlationId,
+        }).catch((error) => {
+          console.warn("[socket:products:sync] stale refresh skipped", error.message);
+        });
+      } else {
+        recordMetric("marketplace.inventory.sync.trigger", {
+          source: "socket-stale-refresh-skipped-throttle",
+        }).catch(() => null);
+      }
     }
 
     if (!projected.length) {
@@ -309,6 +376,14 @@ io.on("connection", (socket) => {
 
   // Cart events
   socket.on("cart:add", async (data, ack) => {
+    const startedAt = Date.now();
+    const operationId = String(data?.operationId || "").trim() || null;
+    let outcome = "success";
+
+      if (marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+      ack({ ok: true, accepted: true, operationId });
+    }
+
     try {
       const Cart = require("./models/cartModel");
       const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
@@ -333,9 +408,13 @@ io.on("connection", (socket) => {
       const productId = String(product.id);
       const variantId = String(product.variantId || "").trim();
       if (!hasRequiredVariantSelection(product)) {
-        socket.emit("cart:error", { message: "Variant selection is required for grouped products" });
-        if (typeof ack === "function") {
-          ack({ ok: false, message: "Variant selection is required for grouped products" });
+        outcome = "validation_error";
+        socket.emit("cart:error", {
+          message: "Variant selection is required for grouped products",
+          operationId,
+        });
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: "Variant selection is required for grouped products", operationId });
         }
         return;
       }
@@ -401,11 +480,12 @@ io.on("connection", (socket) => {
           products: productsWithAvailability,
         });
       } catch (availabilityError) {
+        outcome = "availability_error";
         cart.items = previousItems;
         recalculateCartTotals(cart);
-        socket.emit("cart:error", { message: availabilityError.message });
-        if (typeof ack === "function") {
-          ack({ ok: false, message: availabilityError.message });
+        socket.emit("cart:error", { message: availabilityError.message, operationId });
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: availabilityError.message, operationId });
         }
         return;
       }
@@ -420,13 +500,15 @@ io.on("connection", (socket) => {
         socket.emit("cart:updated", { 
           ...cart.toObject(), 
           remainingTime,
-          reservationExpiry: cart.reservationExpiry 
+          reservationExpiry: cart.reservationExpiry,
+          operationId,
         });
-        if (typeof ack === "function") {
-          ack({ ok: true });
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: true, operationId });
         }
-        socket.broadcast.emit("inventory:updated"); // Notify others about inventory change
+        emitInventoryUpdatedCoalesced({ io, reason: "cart:add" });
       } catch (reservationError) {
+        outcome = "reservation_error";
         // If reservation fails, remove the item and notify user
         if (!existingItem) {
           cart.items = cart.items.filter((item) => String(item.lineKey || "") !== lineKey);
@@ -439,22 +521,37 @@ io.on("connection", (socket) => {
         recalculateCartTotals(cart);
         await cart.save();
         
-        socket.emit("cart:error", { message: reservationError.message });
-        if (typeof ack === "function") {
-          ack({ ok: false, message: reservationError.message });
+        socket.emit("cart:error", { message: reservationError.message, operationId });
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: reservationError.message, operationId });
         }
         return;
       }
     } catch (error) {
+      outcome = "runtime_error";
       console.error("cart:add error:", error);
-      socket.emit("cart:error", { message: error.message });
-      if (typeof ack === "function") {
-        ack({ ok: false, message: error.message });
+      socket.emit("cart:error", { message: error.message, operationId });
+      if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+        ack({ ok: false, message: error.message, operationId });
       }
+    } finally {
+      recordCartActionLatency({
+        action: "add",
+        outcome,
+        latencyMs: Date.now() - startedAt,
+      }).catch(() => null);
     }
   });
 
-  socket.on("cart:remove", async (data) => {
+  socket.on("cart:remove", async (data, ack) => {
+    const startedAt = Date.now();
+    const operationId = String(data?.operationId || "").trim() || null;
+    let outcome = "success";
+
+    if (marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+      ack({ ok: true, accepted: true, operationId });
+    }
+
     try {
       const Cart = require("./models/cartModel");
       const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
@@ -463,7 +560,13 @@ io.on("connection", (socket) => {
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
       const cart = await Cart.findOne(query);
 
-      if (!cart) return;
+      if (!cart) {
+        outcome = "cart_missing";
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: "Cart not found", operationId });
+        }
+        return;
+      }
 
       const existingIndex = findCartItemIndex(cart.items, identity);
       if (existingIndex >= 0) {
@@ -480,23 +583,46 @@ io.on("connection", (socket) => {
         socket.emit("cart:updated", { 
           ...cart.toObject(), 
           remainingTime,
-          reservationExpiry: cart.reservationExpiry 
+          reservationExpiry: cart.reservationExpiry,
+          operationId,
         });
       } else {
         // Clear all reservations if cart is empty
         const { releaseCartReservations } = require("./utils/cartReservation");
         await releaseCartReservations(cart._id);
-        socket.emit("cart:updated", cart);
+        socket.emit("cart:updated", { ...cart.toObject(), operationId });
+      }
+
+      if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+        ack({ ok: true, operationId });
       }
       
-      socket.broadcast.emit("inventory:updated");
+      emitInventoryUpdatedCoalesced({ io, reason: "cart:remove" });
     } catch (error) {
+      outcome = "runtime_error";
       console.error("cart:remove error:", error);
-      socket.emit("cart:error", { message: error.message });
+      socket.emit("cart:error", { message: error.message, operationId });
+      if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+        ack({ ok: false, message: error.message, operationId });
+      }
+    } finally {
+      recordCartActionLatency({
+        action: "remove",
+        outcome,
+        latencyMs: Date.now() - startedAt,
+      }).catch(() => null);
     }
   });
 
-  socket.on("cart:updateQuantity", async (data) => {
+  socket.on("cart:updateQuantity", async (data, ack) => {
+    const startedAt = Date.now();
+    const operationId = String(data?.operationId || "").trim() || null;
+    let outcome = "success";
+
+    if (marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+      ack({ ok: true, accepted: true, operationId });
+    }
+
     try {
       const Cart = require("./models/cartModel");
       const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
@@ -506,7 +632,13 @@ io.on("connection", (socket) => {
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
       const cart = await Cart.findOne(query);
 
-      if (!cart) return;
+      if (!cart) {
+        outcome = "cart_missing";
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: "Cart not found", operationId });
+        }
+        return;
+      }
 
       const previousItems = cart.items.map((item) => (item?.toObject ? item.toObject() : { ...item }));
 
@@ -534,9 +666,13 @@ io.on("connection", (socket) => {
           products: productsWithAvailability,
         });
       } catch (availabilityError) {
+        outcome = "availability_error";
         cart.items = previousItems;
         recalculateCartTotals(cart);
-        socket.emit("cart:error", { message: availabilityError.message });
+        socket.emit("cart:error", { message: availabilityError.message, operationId });
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: availabilityError.message, operationId });
+        }
         return;
       }
 
@@ -549,22 +685,45 @@ io.on("connection", (socket) => {
         socket.emit("cart:updated", { 
           ...cart.toObject(), 
           remainingTime,
-          reservationExpiry: cart.reservationExpiry 
+          reservationExpiry: cart.reservationExpiry,
+          operationId,
         });
       } else {
         const { releaseCartReservations } = require("./utils/cartReservation");
         await releaseCartReservations(cart._id);
-        socket.emit("cart:updated", cart);
+        socket.emit("cart:updated", { ...cart.toObject(), operationId });
+      }
+
+      if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+        ack({ ok: true, operationId });
       }
       
-      socket.broadcast.emit("inventory:updated");
+      emitInventoryUpdatedCoalesced({ io, reason: "cart:updateQuantity" });
     } catch (error) {
+      outcome = "runtime_error";
       console.error("cart:updateQuantity error:", error);
-      socket.emit("cart:error", { message: error.message });
+      socket.emit("cart:error", { message: error.message, operationId });
+      if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+        ack({ ok: false, message: error.message, operationId });
+      }
+    } finally {
+      recordCartActionLatency({
+        action: "update_quantity",
+        outcome,
+        latencyMs: Date.now() - startedAt,
+      }).catch(() => null);
     }
   });
 
-  socket.on("cart:updateVariant", async (data) => {
+  socket.on("cart:updateVariant", async (data, ack) => {
+    const startedAt = Date.now();
+    const operationId = String(data?.operationId || "").trim() || null;
+    let outcome = "success";
+
+    if (marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+      ack({ ok: true, accepted: true, operationId });
+    }
+
     try {
       const Cart = require("./models/cartModel");
       const { reserveCartItems, getRemainingTime } = require("./utils/cartReservation");
@@ -577,13 +736,26 @@ io.on("connection", (socket) => {
 
       const query = socket.userId ? { userId: socket.userId } : { sessionId: socket.sessionId };
       const cart = await Cart.findOne(query);
-      if (!cart) return;
+      if (!cart) {
+        outcome = "cart_missing";
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: "Cart not found", operationId });
+        }
+        return;
+      }
 
       const previousItems = cart.items.map((item) => (item?.toObject ? item.toObject() : { ...item }));
 
       const currentIndex = findCartItemIndex(cart.items, currentIdentity);
       if (currentIndex < 0) {
-        socket.emit("cart:error", { message: "Cart item not found for variant switch" });
+        outcome = "validation_error";
+        socket.emit("cart:error", {
+          message: "Cart item not found for variant switch",
+          operationId,
+        });
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: "Cart item not found for variant switch", operationId });
+        }
         return;
       }
 
@@ -609,9 +781,13 @@ io.on("connection", (socket) => {
           products: productsWithAvailability,
         });
       } catch (availabilityError) {
+        outcome = "availability_error";
         cart.items = previousItems;
         recalculateCartTotals(cart);
-        socket.emit("cart:error", { message: availabilityError.message });
+        socket.emit("cart:error", { message: availabilityError.message, operationId });
+        if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+          ack({ ok: false, message: availabilityError.message, operationId });
+        }
         return;
       }
 
@@ -624,15 +800,30 @@ io.on("connection", (socket) => {
           ...cart.toObject(),
           remainingTime,
           reservationExpiry: cart.reservationExpiry,
+          operationId,
         });
       } else {
-        socket.emit("cart:updated", cart);
+        socket.emit("cart:updated", { ...cart.toObject(), operationId });
       }
 
-      socket.broadcast.emit("inventory:updated");
+      if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+        ack({ ok: true, operationId });
+      }
+
+      emitInventoryUpdatedCoalesced({ io, reason: "cart:updateVariant" });
     } catch (error) {
+      outcome = "runtime_error";
       console.error("cart:updateVariant error:", error);
-      socket.emit("cart:error", { message: error.message });
+      socket.emit("cart:error", { message: error.message, operationId });
+      if (!marketplaceConfig.cartFastAckEnabled && typeof ack === "function") {
+        ack({ ok: false, message: error.message, operationId });
+      }
+    } finally {
+      recordCartActionLatency({
+        action: "update_variant",
+        outcome,
+        latencyMs: Date.now() - startedAt,
+      }).catch(() => null);
     }
   });
 
@@ -755,6 +946,11 @@ io.on("connection", (socket) => {
   socket.on("products:sync", async (payload = {}) => {
     try {
       const correlationId = String(payload?.correlationId || "").trim() || uuidv4();
+      const reason = String(payload?.reason || "unspecified").trim() || "unspecified";
+      recordMetric("marketplace.products.sync.request", {
+        source: "socket",
+        reason,
+      }).catch(() => null);
       const productsWithAvailability = await loadProductsWithEffectiveAvailability({
         allowEmptyOnColdStart: true,
         correlationId,
@@ -772,6 +968,7 @@ io.on("connection", (socket) => {
       socket.emit("products:synced", productsWithAvailability, {
         correlationId,
         syncedAt,
+        reason,
         source: productsWithAvailability.length ? "projection-cache" : "projection-cache-empty",
         status: productsWithAvailability.length ? "ok" : "warming",
       });
