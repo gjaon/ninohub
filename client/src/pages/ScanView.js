@@ -9,12 +9,23 @@ const ScanView = () => {
   const [status, setStatus] = useState("loading");
   const [barcode, setBarcode] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [debugInfo, setDebugInfo] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
 
     (async () => {
+      // Try the same-origin REST call first via axios. If that fails on a
+      // mobile browser, fall back to a raw `fetch` against an absolute,
+      // same-origin URL so we (a) bypass any axios interceptor quirks and
+      // (b) collect enough info to display on screen for debugging — mobile
+      // Safari has no easy on-device console.
+      const pageOrigin =
+        typeof window !== "undefined" ? window.location.origin : "";
+      const fallbackUrl = `${pageOrigin}/api/barcodes/${encodeURIComponent(
+        slug
+      )}`;
       try {
         const response = await fetchBarcode(slug);
         if (cancelled) return;
@@ -27,10 +38,72 @@ const ScanView = () => {
         }
         setBarcode(data);
         setStatus("ready");
-      } catch (error) {
-        if (cancelled) return;
-        setErrorMessage(error.message || "Could not load barcode");
-        setStatus("error");
+      } catch (primaryError) {
+        // Same-origin fetch fallback. If this succeeds, the bug is in the
+        // axios layer (likely the base URL). If it also fails, it's a real
+        // network/CORS/server problem and we capture the details on screen.
+        try {
+          const res = await fetch(fallbackUrl, {
+            method: "GET",
+            credentials: "include",
+            headers: { Accept: "application/json" },
+          });
+          const text = await res.text();
+          let parsed = null;
+          try {
+            parsed = JSON.parse(text);
+          } catch (_e) {
+            parsed = null;
+          }
+          if (cancelled) return;
+          if (res.ok && parsed?.data) {
+            const data = parsed.data;
+            const items = data?.items || [];
+            const isLinkOnly =
+              items.length === 1 && items[0]?.kind === "url";
+            if (isLinkOnly && items[0].content) {
+              window.location.replace(items[0].content);
+              return;
+            }
+            setBarcode(data);
+            setStatus("ready");
+            return;
+          }
+          setDebugInfo({
+            pageOrigin,
+            fallbackUrl,
+            primaryError:
+              primaryError?.message || String(primaryError) || "unknown",
+            fallbackStatus: `${res.status} ${res.statusText}`,
+            fallbackBody: text.slice(0, 200),
+            userAgent:
+              typeof navigator !== "undefined" ? navigator.userAgent : "",
+          });
+          setErrorMessage(
+            parsed?.message ||
+              primaryError?.message ||
+              "Could not load barcode"
+          );
+          setStatus("error");
+        } catch (fallbackError) {
+          if (cancelled) return;
+          setDebugInfo({
+            pageOrigin,
+            fallbackUrl,
+            primaryError:
+              primaryError?.message || String(primaryError) || "unknown",
+            fallbackError:
+              fallbackError?.message ||
+              String(fallbackError) ||
+              "unknown",
+            userAgent:
+              typeof navigator !== "undefined" ? navigator.userAgent : "",
+          });
+          setErrorMessage(
+            primaryError?.message || "Could not load barcode"
+          );
+          setStatus("error");
+        }
       }
     })();
 
@@ -128,6 +201,33 @@ const ScanView = () => {
           <div className="scan-state scan-state-error">
             <h2>Barcode not found</h2>
             <p>{errorMessage}</p>
+            {debugInfo && (
+              <details
+                style={{
+                  marginTop: 16,
+                  textAlign: "left",
+                  fontSize: 12,
+                  background: "rgba(0,0,0,0.04)",
+                  padding: 12,
+                  borderRadius: 8,
+                  wordBreak: "break-all",
+                }}
+              >
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                  Diagnostics
+                </summary>
+                <pre
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    margin: "8px 0 0",
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  }}
+                >
+                  {JSON.stringify(debugInfo, null, 2)}
+                </pre>
+              </details>
+            )}
           </div>
         )}
 
