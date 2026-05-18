@@ -1,0 +1,111 @@
+.maintenance-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+  background: linear-gradient(135deg, #0f1115 0%, #1a1d24 100%);
+  color: #f5f5f5;
+}
+
+.maintenance-card {
+  width: 100%;
+  max-width: 520px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  padding: 48px 36px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.maintenance-mark {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 20px;
+  color: #d8b04a;
+}
+
+.maintenance-mark svg {
+  width: 100%;
+  height: 100%;
+}
+
+.maintenance-card h1 {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  letter-spacing: -0.01em;
+  color: #f5f5f5;
+}
+
+.maintenance-card p {
+  font-size: 15px;
+  line-height: 1.6;
+  color: rgba(245, 245, 245, 0.75);
+  margin: 0 0 24px;
+}
+
+.maintenance-footnote {
+  font-size: 13px;
+  color: rgba(245, 245, 245, 0.55);
+  margin-top: 16px;
+}
+
+.maintenance-admin {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.maintenance-admin-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+  color: rgba(216, 176, 74, 0.85);
+  margin: 0 0 12px;
+}
+
+.maintenance-cta {
+  display: inline-block;
+  padding: 12px 24px;
+  border-radius: 999px;
+  background: #d8b04a;
+  color: #14161b;
+  font-weight: 600;
+  font-size: 14px;
+  text-decoration: none;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.maintenance-cta:hover {
+  background: #e6c062;
+  transform: translateY(-1px);
+}
+
+.maintenance-session {
+  margin-top: 16px;
+  font-size: 13px;
+  color: rgba(245, 245, 245, 0.55);
+}
+
+.maintenance-session button {
+  background: none;
+  border: none;
+  color: rgba(245, 245, 245, 0.75);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 13px;
+  margin: 0 0 0 8px;
+}
+
+@media (max-width: 480px) {
+  .maintenance-card {
+    padding: 36px 24px;
+  }
+
+  .maintenance-card h1 {
+    font-size: 24px;
+  }
+}

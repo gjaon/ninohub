@@ -26,6 +26,7 @@ const productRoute = require("./routes/productRoutes");
 const marketplaceRoute = require("./routes/marketplaceRoutes");
 const webhookRoute = require("./routes/webhookRoutes");
 const adminRoute = require("./routes/adminRoutes");
+const barcodeRoute = require("./routes/barcodeRoutes");
 const errorHandler = require("./middleware/errorMiddleware");
 const { subscribe } = require("./services/marketplace/businessEventBus");
 const {
@@ -121,6 +122,7 @@ const emitInventoryUpdatedCoalesced = ({ io, reason = "unknown" }) => {
 // Middlewares
 app.use(
   express.json({
+    limit: "12mb",
     verify: (req, _res, buffer) => {
       req.rawBody = buffer;
     },
@@ -128,7 +130,7 @@ app.use(
 );
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "12mb" }));
 const isProduction =
   process.env.NODE_ENV === "production" ||
   process.env.NODE_ENV === "staging";
@@ -1265,6 +1267,7 @@ app.use("/api/products", productRoute);
 app.use("/api/marketplace", marketplaceRoute);
 app.use("/api/webhooks", webhookRoute);
 app.use("/api/admin", adminRoute);
+app.use("/api/barcodes", barcodeRoute);
 
 // Routes
 app.get("/api", (req, res) => {

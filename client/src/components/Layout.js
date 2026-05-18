@@ -1,33 +1,32 @@
 import React from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, matchPath } from "react-router-dom";
 import Navbar from "./Navbar";
-import LaunchCountdown from "./LaunchCountdown";
 import Footer from "./Footer";
-import { useLaunch } from "../context/LaunchContext";
-import { useSelector } from "react-redux";
 import "./Layout.css";
 
+const MAINTENANCE_MODE =
+  String(process.env.REACT_APP_MAINTENANCE_MODE ?? "true").toLowerCase() !==
+  "false";
+
+const CHROME_ALLOWED_PATHS = ["/barcode"];
+
+const isScanPath = (pathname) =>
+  Boolean(matchPath({ path: "/scan/:slug", end: true }, pathname));
+
 const Layout = ({ children }) => {
-  const { isPreLaunch } = useLaunch();
   const { pathname } = useLocation();
-  const { isAuthenticated, currentUser } = useSelector((state) => state.user);
 
-  // Always show main content on waitlist page, hide on other pages if pre-launch - allow login page and registeration page also
-  const showMainContent = pathname === "/waitlist" ||
-    pathname === "/login" ||
-    pathname === "/register";
-
-  const adminEmails = ["yemijoshua81@gmail.com", "oluwakemisolanino@gmail.com"];
-
-  const isAdmin = isAuthenticated && adminEmails.includes(currentUser?.email);
-
-  const shouldDisplayLaunchCountDown = !isAdmin;
+  // /scan/:slug is the public barcode content — must render without any chrome.
+  // During maintenance only the admin-facing /barcode keeps the navbar/footer.
+  const renderChrome = MAINTENANCE_MODE
+    ? CHROME_ALLOWED_PATHS.includes(pathname) && !isScanPath(pathname)
+    : !isScanPath(pathname);
 
   return (
     <div className="layout-container">
-      <Navbar />
-        <main className="layout-main-content">{children}</main>
-      <Footer />
+      {renderChrome && <Navbar />}
+      <main className="layout-main-content">{children}</main>
+      {renderChrome && <Footer />}
     </div>
   );
 };

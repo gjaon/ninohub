@@ -44,7 +44,14 @@ import ContactUs from "./pages/ContactUs";
 import Profile from "./pages/Profile";
 import WaitlistForm from "./pages/WaitlistForm";
 import AdminPanel from "./pages/AdminPanel";
+import BarcodeGenerator from "./pages/BarcodeGenerator";
+import ScanView from "./pages/ScanView";
+import MaintenancePage from "./pages/MaintenancePage";
 import "./App.css";
+
+const MAINTENANCE_MODE =
+  String(process.env.REACT_APP_MAINTENANCE_MODE ?? "true").toLowerCase() !==
+  "false";
 
 const createCorrelationId = (prefix = "web") => {
   const random = Math.random().toString(16).slice(2, 10);
@@ -403,23 +410,34 @@ function App() {
       <Router>
         <ScrollToTop />
         <Layout>
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/products" element={<Products />} />
-            <Route path="/products/:id" element={<ProductDetail />} />
-            <Route path="/customization" element={<Customization />}>
-              <Route path="create" element={<CreateCustomization />} />
-            </Route>
-            <Route path="/cart" element={<Cart />} />
-            <Route path="/checkout" element={<Checkout />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/track-order" element={<TrackOrder />} />
-            <Route path="/contact" element={<ContactUs />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/admin" element={<AdminPanel />} />
-            <Route path="/waitlist" element={<WaitlistForm />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
+          {MAINTENANCE_MODE ? (
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route path="/barcode" element={<BarcodeGenerator />} />
+              <Route path="/scan/:slug" element={<ScanView />} />
+              <Route path="*" element={<MaintenancePage />} />
+            </Routes>
+          ) : (
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/products" element={<Products />} />
+              <Route path="/products/:id" element={<ProductDetail />} />
+              <Route path="/customization" element={<Customization />}>
+                <Route path="create" element={<CreateCustomization />} />
+              </Route>
+              <Route path="/cart" element={<Cart />} />
+              <Route path="/checkout" element={<Checkout />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/track-order" element={<TrackOrder />} />
+              <Route path="/contact" element={<ContactUs />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/admin" element={<AdminPanel />} />
+              <Route path="/waitlist" element={<WaitlistForm />} />
+              <Route path="/barcode" element={<BarcodeGenerator />} />
+              <Route path="/scan/:slug" element={<ScanView />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          )}
         </Layout>
       </Router>
     </LaunchProvider>

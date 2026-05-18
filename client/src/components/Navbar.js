@@ -90,11 +90,18 @@ const Navbar = () => {
           {isAuthenticated ? (
             <>
               {isAdmin && (
-                <li>
-                  <Link to="/admin" onClick={closeMobileMenu}>
-                    Admin
-                  </Link>
-                </li>
+                <>
+                  <li>
+                    <Link to="/barcode" onClick={closeMobileMenu}>
+                      Barcode
+                    </Link>
+                  </li>
+                  <li>
+                    <Link to="/admin" onClick={closeMobileMenu}>
+                      Admin
+                    </Link>
+                  </li>
+                </>
               )}
               <li>
                 <Link
