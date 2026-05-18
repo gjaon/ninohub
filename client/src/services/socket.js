@@ -2,10 +2,49 @@ import io from "socket.io-client";
 
 let socket = null;
 
+const isLocalHost = (hostname) =>
+  hostname === "localhost" ||
+  hostname === "127.0.0.1" ||
+  hostname === "0.0.0.0" ||
+  hostname?.endsWith(".local");
+
+const resolveSocketUrl = () => {
+  const explicit = (process.env.REACT_APP_SERVER_URL || "").trim();
+  const browserOrigin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "";
+  const browserHostname =
+    typeof window !== "undefined" ? window.location?.hostname : "";
+
+  if (explicit) {
+    let explicitHost = "";
+    try {
+      explicitHost = new URL(explicit).hostname;
+    } catch (_e) {
+      explicitHost = "";
+    }
+    if (
+      isLocalHost(explicitHost) &&
+      !isLocalHost(browserHostname) &&
+      browserOrigin
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[socket] Ignoring REACT_APP_SERVER_URL=${explicit} because the page is served from ${browserOrigin}. Falling back to same-origin.`
+      );
+      return browserOrigin.replace(/\/+$/, "");
+    }
+    return explicit.replace(/\/+$/, "");
+  }
+  if (browserOrigin) return browserOrigin.replace(/\/+$/, "");
+  return "https://ninohub.onrender.com";
+};
+
 const initializeSocket = (token) => {
   if (socket) return socket;
 
-  const socketUrl = process.env.REACT_APP_SERVER_URL || "https://ninohub.onrender.com/";
+  const socketUrl = resolveSocketUrl();
   // const socketUrl = process.env.REACT_APP_SERVER_URL || "http://localhost:5001";
   
   // Get or create session ID

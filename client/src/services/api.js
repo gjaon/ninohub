@@ -16,13 +16,47 @@ import axios from "axios";
 // An explicit `REACT_APP_API_URL` still wins when set (useful for split
 // deployments where the API lives on a different host).
 // const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5001";
+const isLocalHost = (hostname) =>
+  hostname === "localhost" ||
+  hostname === "127.0.0.1" ||
+  hostname === "0.0.0.0" ||
+  hostname?.endsWith(".local");
+
 const resolveApiBaseUrl = () => {
-  const explicit = process.env.REACT_APP_API_URL;
-  if (explicit && explicit.trim()) {
-    return explicit.trim().replace(/\/+$/, "");
+  const explicit = (process.env.REACT_APP_API_URL || "").trim();
+  const browserOrigin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "";
+  const browserHostname =
+    typeof window !== "undefined" ? window.location?.hostname : "";
+
+  // Defensive: if the env var was baked in pointing at localhost but the page
+  // is actually being viewed from a non-localhost host (i.e. the dev .env
+  // leaked into a production build), ignore the env var and use the page's
+  // own origin. This prevents the entire site from being broken on every
+  // device but the build machine.
+  if (explicit) {
+    let explicitHost = "";
+    try {
+      explicitHost = new URL(explicit).hostname;
+    } catch (_e) {
+      explicitHost = "";
+    }
+    const explicitIsLocal = isLocalHost(explicitHost);
+    const browserIsLocal = isLocalHost(browserHostname);
+    if (explicitIsLocal && !browserIsLocal && browserOrigin) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[api] Ignoring REACT_APP_API_URL=${explicit} because the page is served from ${browserOrigin}. Falling back to same-origin.`
+      );
+      return browserOrigin.replace(/\/+$/, "");
+    }
+    return explicit.replace(/\/+$/, "");
   }
-  if (typeof window !== "undefined" && window.location?.origin) {
-    return window.location.origin.replace(/\/+$/, "");
+
+  if (browserOrigin) {
+    return browserOrigin.replace(/\/+$/, "");
   }
   // SSR / test fallback.
   return "https://ninohub.com";

@@ -1,7 +1,34 @@
 import { useState } from "react";
 import axios from "axios";
 
-const API_BASE_URL = process.env.REACT_APP_SERVER_URL || "http://localhost:5000";
+const isLocalHost = (hostname) =>
+  hostname === "localhost" ||
+  hostname === "127.0.0.1" ||
+  hostname === "0.0.0.0" ||
+  hostname?.endsWith(".local");
+
+const resolveBaseUrl = () => {
+  const explicit = (process.env.REACT_APP_SERVER_URL || "").trim();
+  const origin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "";
+  const hostname =
+    typeof window !== "undefined" ? window.location?.hostname : "";
+  if (explicit) {
+    let explicitHost = "";
+    try {
+      explicitHost = new URL(explicit).hostname;
+    } catch (_e) {}
+    if (isLocalHost(explicitHost) && !isLocalHost(hostname) && origin) {
+      return origin.replace(/\/+$/, "");
+    }
+    return explicit.replace(/\/+$/, "");
+  }
+  return (origin || "http://localhost:5000").replace(/\/+$/, "");
+};
+
+const API_BASE_URL = resolveBaseUrl();
 
 export const usePayStack = () => {
   const [loading, setLoading] = useState(false);
