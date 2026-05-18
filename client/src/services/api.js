@@ -2,7 +2,14 @@ import axios from "axios";
 
 // Create axios instance with default config
 // const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5001";
-const API_BASE_URL = process.env.REACT_APP_API_URL || "https://ninohub.com/";
+const RAW_API_BASE_URL =
+  process.env.REACT_APP_API_URL || "https://ninohub.com/";
+// Strip trailing slashes so that `baseURL + "/api/..."` never produces a
+// double slash (e.g. `https://ninohub.com//api/...`). Chromium-based browsers
+// quietly normalize this, but Safari — including the in-app browser opened by
+// the iOS Camera/QR scanner — sends it literally, and most edge proxies
+// respond with a redirect or 404 that surfaces in axios as `Network Error`.
+const API_BASE_URL = RAW_API_BASE_URL.replace(/\/+$/, "");
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
