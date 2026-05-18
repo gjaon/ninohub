@@ -1281,11 +1281,44 @@ if (
   process.env.NODE_ENV === "production" ||
   process.env.NODE_ENV === "staging"
 ) {
-  app.use(express.static(path.join(__dirname, "/client/build")));
+  const clientBuildPath = path.join(__dirname, "/client/build");
 
-  // Serve React app for all non-API routes using a catch-all
+  // Hashed CRA assets under /static/* can be cached for a year — their URLs
+  // change on every build. Everything else (notably index.html, manifest.json,
+  // service-worker.js) must NOT be cached, otherwise mobile browsers (iOS
+  // Safari in particular) will keep loading a stale index.html that points at
+  // an outdated JS bundle — which is what caused QR scans on mobile to keep
+  // hitting an old `https://ninohub.com//api/...` URL after a fresh deploy.
+  app.use(
+    express.static(clientBuildPath, {
+      etag: true,
+      lastModified: true,
+      setHeaders: (res, filePath) => {
+        if (/[\\/]static[\\/]/.test(filePath)) {
+          res.setHeader(
+            "Cache-Control",
+            "public, max-age=31536000, immutable"
+          );
+        } else {
+          res.setHeader(
+            "Cache-Control",
+            "no-cache, no-store, must-revalidate"
+          );
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+        }
+      },
+    })
+  );
+
+  // Serve React app for all non-API routes using a catch-all. The HTML shell
+  // must never be cached so that newly-deployed asset hashes are picked up
+  // immediately on the next navigation.
   app.use((req, res) => {
-    res.sendFile(path.join(__dirname, "/client/build", "index.html"));
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.sendFile(path.join(clientBuildPath, "index.html"));
   });
 }
 
