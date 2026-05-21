@@ -95,6 +95,8 @@ const BarcodeGenerator = () => {
   const videoInputRef = useRef(null);
 
   const scanOrigin = useMemo(() => {
+    const configured = (process.env.REACT_APP_SCAN_ORIGIN || "").trim();
+    if (configured) return configured.replace(/\/+$/, "");
     if (typeof window === "undefined") return "";
     return window.location.origin;
   }, []);

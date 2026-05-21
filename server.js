@@ -145,6 +145,7 @@ const defaultOrigins = [
       ]),
   "https://www.ninohub.com",
   "https://ninohub.onrender.com",
+  "https://qrcode.ninohub.com",
 ];
 const parseOrigins = (origins) =>
   (origins || "")
