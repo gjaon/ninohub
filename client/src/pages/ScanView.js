@@ -1,8 +1,130 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
-import { toast } from "sonner";
 import { fetchBarcode } from "../services/barcodes";
 import "./ScanView.css";
+
+// Immersive video block. We try to autoplay WITH sound first; browsers usually
+// block sound-on autoplay, so we fall back to muted autoplay (which they do
+// allow) and surface a tap-to-unmute affordance — the viewer still lands on a
+// playing video immediately rather than a paused poster.
+const ScanVideo = ({ src, mimeType, active }) => {
+  const videoRef = useRef(null);
+  const [muted, setMuted] = useState(false);
+  const [needsTap, setNeedsTap] = useState(false);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (!active) {
+      el.pause();
+      return;
+    }
+
+    let cancelled = false;
+    const attempt = async () => {
+      try {
+        el.muted = false;
+        await el.play();
+        if (!cancelled) setMuted(false);
+      } catch (_soundErr) {
+        // Sound-on autoplay rejected — retry muted so it still plays.
+        try {
+          el.muted = true;
+          await el.play();
+          if (!cancelled) {
+            setMuted(true);
+            setNeedsTap(true);
+          }
+        } catch (_mutedErr) {
+          // Even muted autoplay blocked — viewer must tap to start.
+          if (!cancelled) setNeedsTap(true);
+        }
+      }
+    };
+    attempt();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
+  const handleEnableSound = useCallback(async () => {
+    const el = videoRef.current;
+    if (!el) return;
+    try {
+      el.muted = false;
+      await el.play();
+      setMuted(false);
+      setNeedsTap(false);
+    } catch (_err) {
+      // ignore — leave overlay up
+    }
+  }, []);
+
+  return (
+    <div className="scan-video-wrap" onClick={muted ? handleEnableSound : undefined}>
+      <video
+        ref={videoRef}
+        playsInline
+        loop
+        controls
+        preload="auto"
+        className="scan-video"
+      >
+        <source src={src} type={mimeType || "video/mp4"} />
+      </video>
+      {needsTap && muted && (
+        <button
+          type="button"
+          className="scan-unmute"
+          onClick={handleEnableSound}
+        >
+          <span className="scan-unmute-icon" aria-hidden="true">
+            🔇
+          </span>
+          Tap for sound
+        </button>
+      )}
+    </div>
+  );
+};
+
+const ScanImage = ({ src }) => {
+  const [zoomed, setZoomed] = useState(false);
+  return (
+    <div
+      className={`scan-image-wrap ${zoomed ? "zoomed" : ""}`}
+      onClick={() => setZoomed((v) => !v)}
+    >
+      <img src={src} alt="" className="scan-image" />
+    </div>
+  );
+};
+
+const ScanNote = ({ content }) => (
+  <div className="scan-note">
+    <div className="scan-note-card">
+      <p>{content}</p>
+    </div>
+  </div>
+);
+
+const ScanLink = ({ content }) => (
+  <div className="scan-link-block">
+    <div className="scan-link-card">
+      <span className="scan-link-eyebrow">Link</span>
+      <p className="scan-link-url">{content}</p>
+      <a
+        href={content}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="scan-link-btn"
+      >
+        Open link
+      </a>
+    </div>
+  </div>
+);
 
 const ScanView = () => {
   const { slug } = useParams();
@@ -10,6 +132,10 @@ const ScanView = () => {
   const [barcode, setBarcode] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [debugInfo, setDebugInfo] = useState(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const feedRef = useRef(null);
+  const stageRefs = useRef([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,205 +239,108 @@ const ScanView = () => {
   }, [slug]);
 
   const items = barcode?.items || [];
+  const hasMultiple = items.length > 1;
 
-  const handleCopy = async (value) => {
-    if (!value) return;
-    try {
-      await navigator.clipboard.writeText(value);
-      toast.success("Copied to clipboard");
-    } catch (_error) {
-      toast.error("Could not copy");
+  // Track which stage is in view so we only autoplay the active video and can
+  // hide the scroll cue on the last item.
+  useEffect(() => {
+    if (status !== "ready" || !hasMultiple) return undefined;
+    const root = feedRef.current;
+    if (!root) return undefined;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const idx = Number(entry.target.dataset.index);
+            if (!Number.isNaN(idx)) setActiveIndex(idx);
+          }
+        });
+      },
+      { root, threshold: 0.6 }
+    );
+
+    stageRefs.current.forEach((el) => el && observer.observe(el));
+    return () => observer.disconnect();
+  }, [status, hasMultiple, items.length]);
+
+  const scrollToNext = useCallback(() => {
+    const next = stageRefs.current[activeIndex + 1];
+    if (next) next.scrollIntoView({ behavior: "smooth" });
+  }, [activeIndex]);
+
+  const renderItem = (item, idx) => {
+    if (item.kind === "video") {
+      return (
+        <ScanVideo
+          src={item.content}
+          mimeType={item.mimeType}
+          active={!hasMultiple || activeIndex === idx}
+        />
+      );
     }
+    if (item.kind === "image") return <ScanImage src={item.content} />;
+    if (item.kind === "url") return <ScanLink content={item.content} />;
+    return <ScanNote content={item.content} />;
   };
 
-  const handleDownload = (dataUrl, filename) => {
-    if (!dataUrl) return;
-    const link = document.createElement("a");
-    link.href = dataUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+  if (status === "loading") {
+    return (
+      <div className="scan-immersive scan-centered">
+        <div className="scan-spinner" />
+      </div>
+    );
+  }
 
-  const buildActions = () => {
-    const actions = [];
-    items.forEach((item, idx) => {
-      if (item.kind === "text") {
-        actions.push({
-          key: `text-${idx}`,
-          label: items.filter((i) => i.kind === "text").length > 1
-            ? `Copy text ${idx + 1}`
-            : "Copy text",
-          variant: "secondary",
-          onClick: () => handleCopy(item.content),
-        });
-      } else if (item.kind === "url") {
-        actions.push({
-          key: `url-${idx}`,
-          label: "Open link",
-          variant: "primary",
-          href: item.content,
-          target: "_blank",
-        });
-      } else if (item.kind === "image") {
-        const ext = (item.mimeType || "image/png").split("/")[1] || "png";
-        actions.push({
-          key: `image-${idx}`,
-          label: items.filter((i) => i.kind === "image").length > 1
-            ? `Download image ${idx + 1}`
-            : "Download image",
-          variant: "secondary",
-          onClick: () =>
-            handleDownload(
-              item.content,
-              `barcode-${barcode.slug}-image-${idx + 1}.${ext}`
-            ),
-        });
-      } else if (item.kind === "video") {
-        const ext = (item.mimeType || "video/mp4").split("/")[1] || "mp4";
-        actions.push({
-          key: `video-${idx}`,
-          label: items.filter((i) => i.kind === "video").length > 1
-            ? `Download video ${idx + 1}`
-            : "Download video",
-          variant: "secondary",
-          onClick: () =>
-            handleDownload(
-              item.content,
-              `barcode-${barcode.slug}-video-${idx + 1}.${ext}`
-            ),
-        });
-      }
-    });
-    return actions;
-  };
+  if (status === "error") {
+    return (
+      <div className="scan-immersive scan-centered">
+        <div className="scan-error-card">
+          <h2>Nothing here</h2>
+          <p>{errorMessage}</p>
+          {debugInfo && (
+            <details className="scan-diagnostics">
+              <summary>Diagnostics</summary>
+              <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="scan-page">
-      <div className="scan-shell">
-        {status === "loading" && (
-          <div className="scan-state">
-            <div className="scan-spinner" />
-            <p>Loading barcode...</p>
-          </div>
-        )}
+    <div className="scan-immersive">
+      <div
+        className={`scan-feed ${hasMultiple ? "multi" : "single"}`}
+        ref={feedRef}
+      >
+        {items.map((item, idx) => (
+          <section
+            key={`${item.kind}-${idx}`}
+            className={`scan-stage stage-${item.kind}`}
+            data-index={idx}
+            ref={(el) => {
+              stageRefs.current[idx] = el;
+            }}
+          >
+            {renderItem(item, idx)}
 
-        {status === "error" && (
-          <div className="scan-state scan-state-error">
-            <h2>Barcode not found</h2>
-            <p>{errorMessage}</p>
-            {debugInfo && (
-              <details
-                style={{
-                  marginTop: 16,
-                  textAlign: "left",
-                  fontSize: 12,
-                  background: "rgba(0,0,0,0.04)",
-                  padding: 12,
-                  borderRadius: 8,
-                  wordBreak: "break-all",
-                }}
+            {hasMultiple && idx < items.length - 1 && (
+              <button
+                type="button"
+                className="scan-scroll-cue"
+                onClick={scrollToNext}
+                aria-label="Scroll to next item"
               >
-                <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                  Diagnostics
-                </summary>
-                <pre
-                  style={{
-                    whiteSpace: "pre-wrap",
-                    margin: "8px 0 0",
-                    fontFamily:
-                      "ui-monospace, SFMono-Regular, Menlo, monospace",
-                  }}
-                >
-                  {JSON.stringify(debugInfo, null, 2)}
-                </pre>
-              </details>
+                <span className="scan-scroll-label">More</span>
+                <span className="scan-chevron" aria-hidden="true">
+                  ⌄
+                </span>
+              </button>
             )}
-          </div>
-        )}
-
-        {status === "ready" && barcode && (
-          <>
-            <div className="scan-items">
-              {items.map((item, idx) => {
-                if (item.kind === "text") {
-                  return (
-                    <div key={`text-${idx}`} className="scan-block scan-block-text">
-                      <pre>{item.content}</pre>
-                    </div>
-                  );
-                }
-                if (item.kind === "url") {
-                  return (
-                    <div key={`url-${idx}`} className="scan-block scan-block-link">
-                      <a
-                        href={item.content}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {item.content}
-                      </a>
-                    </div>
-                  );
-                }
-                if (item.kind === "image") {
-                  return (
-                    <div key={`image-${idx}`} className="scan-block scan-block-image">
-                      <img src={item.content} alt="" />
-                    </div>
-                  );
-                }
-                if (item.kind === "video") {
-                  return (
-                    <div key={`video-${idx}`} className="scan-block scan-block-video">
-                      <video
-                        src={item.content}
-                        controls
-                        playsInline
-                        preload="metadata"
-                      />
-                    </div>
-                  );
-                }
-                return null;
-              })}
-            </div>
-
-            <div className="scan-actions">
-              {buildActions().map((action) =>
-                action.href ? (
-                  <a
-                    key={action.key}
-                    href={action.href}
-                    target={action.target}
-                    rel="noopener noreferrer"
-                    className={
-                      action.variant === "primary"
-                        ? "scan-btn-primary"
-                        : "scan-btn-secondary"
-                    }
-                  >
-                    {action.label}
-                  </a>
-                ) : (
-                  <button
-                    key={action.key}
-                    type="button"
-                    className={
-                      action.variant === "primary"
-                        ? "scan-btn-primary"
-                        : "scan-btn-secondary"
-                    }
-                    onClick={action.onClick}
-                  >
-                    {action.label}
-                  </button>
-                )
-              )}
-            </div>
-          </>
-        )}
+          </section>
+        ))}
       </div>
     </div>
   );

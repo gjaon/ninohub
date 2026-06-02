@@ -1,9 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useSelector } from "react-redux";
-import QRCode from "qrcode";
 import { toast } from "sonner";
 import { createBarcode, deleteBarcode, listBarcodes } from "../services/barcodes";
+import {
+  renderShapedQrDataUrl,
+  MODULE_STYLES,
+  FRAME_SHAPES,
+} from "../utils/shapedQrCode";
 import "./BarcodeGenerator.css";
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -82,6 +86,8 @@ const BarcodeGenerator = () => {
   const [videoDataUrl, setVideoDataUrl] = useState("");
   const [videoMeta, setVideoMeta] = useState(null);
   const [label, setLabel] = useState("");
+  const [moduleStyle, setModuleStyle] = useState("square");
+  const [frameShape, setFrameShape] = useState("heart");
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -100,6 +106,21 @@ const BarcodeGenerator = () => {
     if (typeof window === "undefined") return "";
     return window.location.origin;
   }, []);
+
+  // Live style preview — uses a representative target so the chosen frame and
+  // module style are reflected before the real code is generated.
+  const stylePreview = useMemo(() => {
+    try {
+      return renderShapedQrDataUrl(`${scanOrigin}/scan/preview`, {
+        size: 360,
+        moduleStyle,
+        frameShape,
+        errorCorrectionLevel: "H",
+      });
+    } catch (_error) {
+      return "";
+    }
+  }, [scanOrigin, moduleStyle, frameShape]);
 
   const resetResult = () => {
     setResult((value) => (value ? null : value));
@@ -311,11 +332,14 @@ const BarcodeGenerator = () => {
         ? items[0].content
         : `${scanOrigin}/scan/${slug}`;
 
-      const qrDataUrl = await QRCode.toDataURL(qrTarget, {
-        errorCorrectionLevel: "M",
-        margin: 2,
-        width: 480,
-        color: { dark: "#1a1a1a", light: "#ffffff" },
+      // Styled modules can erode scan reliability, so always encode at the
+      // highest error-correction level (H) and keep the code square inside the
+      // decorative frame.
+      const qrDataUrl = renderShapedQrDataUrl(qrTarget, {
+        size: 640,
+        moduleStyle,
+        frameShape,
+        errorCorrectionLevel: "H",
       });
 
       setResult({
@@ -325,6 +349,8 @@ const BarcodeGenerator = () => {
         label: response?.data?.label || "",
         kinds: response?.data?.kinds || [],
         isLinkOnly,
+        moduleStyle,
+        frameShape,
       });
       toast.success("Barcode generated");
       loadHistory();
@@ -377,6 +403,8 @@ const BarcodeGenerator = () => {
     clearImage();
     clearVideo();
     setLabel("");
+    setModuleStyle("square");
+    setFrameShape("heart");
     setTextIncluded(true);
     setUrlIncluded(false);
     setImageIncluded(false);
@@ -656,6 +684,75 @@ const BarcodeGenerator = () => {
                 maxLength={120}
               />
             </div>
+
+            <fieldset className="barcode-section style-section active">
+              <div className="section-header">
+                <div className="section-title">
+                  <h3>Shape &amp; style</h3>
+                  <span>Make it a heart — or pick another look</span>
+                </div>
+              </div>
+
+              <div className="style-grid">
+                <div className="style-preview">
+                  {stylePreview ? (
+                    <img src={stylePreview} alt="QR style preview" />
+                  ) : (
+                    <div className="style-preview-empty">Preview</div>
+                  )}
+                </div>
+
+                <div className="style-controls">
+                  <div className="style-field">
+                    <span className="style-field-label">Frame</span>
+                    <div className="style-options">
+                      {FRAME_SHAPES.map((shape) => (
+                        <button
+                          key={shape.id}
+                          type="button"
+                          className={`style-chip ${
+                            frameShape === shape.id ? "selected" : ""
+                          }`}
+                          onClick={() => {
+                            setFrameShape(shape.id);
+                            resetResult();
+                          }}
+                        >
+                          {shape.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="style-field">
+                    <span className="style-field-label">Module style</span>
+                    <div className="style-options">
+                      {MODULE_STYLES.map((style) => (
+                        <button
+                          key={style.id}
+                          type="button"
+                          className={`style-chip ${
+                            moduleStyle === style.id ? "selected" : ""
+                          }`}
+                          onClick={() => {
+                            setModuleStyle(style.id);
+                            resetResult();
+                          }}
+                        >
+                          {style.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <p className="style-hint">
+                    Codes are encoded at the highest error-correction level so
+                    decorative styles stay scannable. Always test-scan before
+                    printing.
+                  </p>
+                </div>
+              </div>
+            </fieldset>
 
             <div className="form-actions">
               <button
