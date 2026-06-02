@@ -143,6 +143,14 @@
 .scan-note-card {
   max-width: 560px;
   width: 100%;
+  /* Cap the note frame so very long text never runs past the viewport — it
+     stays a fixed-size card and the overflow scrolls inside it. This is
+     independent of the stage-to-stage feed scroll, so image/video stages keep
+     scrolling up as before. */
+  max-height: 90vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   background: linear-gradient(180deg, #fffdf5, #fef6e0);
   color: #2a2417;
   border-radius: 20px;

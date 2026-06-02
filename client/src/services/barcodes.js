@@ -4,6 +4,10 @@ export const createBarcode = async (payload) => {
   return api.post("/api/barcodes", payload);
 };
 
+export const updateBarcode = async (slug, payload) => {
+  return api.put(`/api/barcodes/${slug}`, payload);
+};
+
 export const fetchBarcode = async (slug) => {
   return api.get(`/api/barcodes/${slug}`);
 };

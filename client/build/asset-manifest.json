@@ -1,7 +1,7 @@
 {
   "files": {
-    "main.css": "/static/css/main.b1aba862.css",
-    "main.js": "/static/js/main.f2818990.js",
+    "main.css": "/static/css/main.15f9343e.css",
+    "main.js": "/static/js/main.066b555a.js",
     "static/js/453.d456ce70.chunk.js": "/static/js/453.d456ce70.chunk.js",
     "static/media/necklaces-17.jpg": "/static/media/necklaces-17.eba7ce113180f103bcdc.jpg",
     "static/media/other-03.jpg": "/static/media/other-03.e507c5a6c78c51163aab.jpg",
@@ -240,12 +240,12 @@
     "static/media/instagram-icon.svg": "/static/media/instagram-icon.1a5175d08d43ae2a7483303773c24a91.svg",
     "static/media/tiktok-icon.svg": "/static/media/tiktok-icon.ddfe6c03cfa04a4416c716517123f94e.svg",
     "static/media/facebook-icon.svg": "/static/media/facebook-icon.89fde62f458562dcfdcdae21d1a07c18.svg",
-    "main.b1aba862.css.map": "/static/css/main.b1aba862.css.map",
-    "main.f2818990.js.map": "/static/js/main.f2818990.js.map",
+    "main.15f9343e.css.map": "/static/css/main.15f9343e.css.map",
+    "main.066b555a.js.map": "/static/js/main.066b555a.js.map",
     "453.d456ce70.chunk.js.map": "/static/js/453.d456ce70.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.b1aba862.css",
-    "static/js/main.f2818990.js"
+    "static/css/main.15f9343e.css",
+    "static/js/main.066b555a.js"
   ]
 }

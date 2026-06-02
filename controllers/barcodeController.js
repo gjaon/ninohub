@@ -155,6 +155,58 @@ const createBarcode = asyncHandler(async (req, res) => {
   });
 });
 
+const updateBarcode = asyncHandler(async (req, res) => {
+  const { slug } = req.params;
+  const { items, label } = req.body || {};
+
+  if (!Array.isArray(items) || !items.length) {
+    res.status(400);
+    throw new Error("Add at least one piece of content");
+  }
+
+  if (items.length > MAX_ITEMS) {
+    res.status(400);
+    throw new Error(`A barcode can hold up to ${MAX_ITEMS} items`);
+  }
+
+  let validatedItems;
+  try {
+    validatedItems = items.map(validateItem);
+  } catch (error) {
+    res.status(400);
+    throw error;
+  }
+
+  const hasUrl = validatedItems.some((item) => item.kind === "url");
+  if (hasUrl && validatedItems.length > 1) {
+    res.status(400);
+    throw new Error("A link barcode cannot include other content");
+  }
+
+  const barcode = await Barcode.findOne({ slug });
+  if (!barcode) {
+    res.status(404);
+    throw new Error("Barcode not found");
+  }
+
+  barcode.items = validatedItems;
+  if (typeof label === "string") {
+    barcode.label = label.trim().slice(0, 120);
+  }
+  await barcode.save();
+
+  res.status(200).json({
+    success: true,
+    data: {
+      slug: barcode.slug,
+      label: barcode.label,
+      itemCount: barcode.items.length,
+      kinds: barcode.items.map((item) => item.kind),
+      createdAt: barcode.createdAt,
+    },
+  });
+});
+
 const getBarcode = asyncHandler(async (req, res) => {
   const { slug } = req.params;
   const barcode = await Barcode.findOne({ slug });
@@ -223,4 +275,10 @@ const deleteBarcode = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { createBarcode, getBarcode, listBarcodes, deleteBarcode };
+module.exports = {
+  createBarcode,
+  updateBarcode,
+  getBarcode,
+  listBarcodes,
+  deleteBarcode,
+};

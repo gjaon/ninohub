@@ -2,7 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom";
 import { useSelector } from "react-redux";
 import { toast } from "sonner";
-import { createBarcode, deleteBarcode, listBarcodes } from "../services/barcodes";
+import {
+  createBarcode,
+  deleteBarcode,
+  fetchBarcode,
+  listBarcodes,
+  updateBarcode,
+} from "../services/barcodes";
 import {
   renderShapedQrDataUrl,
   MODULE_STYLES,
@@ -31,6 +37,16 @@ const parseAdminAllowlist = () =>
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean);
+
+// Rough byte size of a base64 data URL — used to show a sensible size on the
+// media preview when loading an existing barcode for editing (we no longer
+// have the original File object).
+const approxBytesFromDataUrl = (dataUrl) => {
+  const value = String(dataUrl || "");
+  const comma = value.indexOf(",");
+  const base64 = comma >= 0 ? value.slice(comma + 1) : value;
+  return Math.floor((base64.length * 3) / 4);
+};
 
 const readFileAsDataUrl = (file) =>
   new Promise((resolve, reject) => {
@@ -132,6 +148,11 @@ const BarcodeGenerator = () => {
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState(null);
 
+  // When set, the form edits an existing barcode (same slug) instead of
+  // creating a new one. Generating then PUTs over the existing record.
+  const [editingSlug, setEditingSlug] = useState(null);
+  const [loadingEdit, setLoadingEdit] = useState(false);
+
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
@@ -203,6 +224,9 @@ const BarcodeGenerator = () => {
       await deleteBarcode(pendingDelete.slug);
       setHistory((rows) => rows.filter((row) => row.slug !== pendingDelete.slug));
       if (result?.slug === pendingDelete.slug) setResult(null);
+      if (editingSlug === pendingDelete.slug) {
+        setEditingSlug(null);
+      }
       toast.success("Barcode deleted");
       setPendingDelete(null);
     } catch (error) {
@@ -332,6 +356,88 @@ const BarcodeGenerator = () => {
     resetResult();
   };
 
+  // Pull an existing barcode into the form so every element can be changed,
+  // added, or removed before saving back over the same slug.
+  const loadBarcodeForEdit = async (slug) => {
+    if (!slug || loadingEdit) return;
+    setLoadingEdit(true);
+    try {
+      const response = await fetchBarcode(slug);
+      const data = response?.data;
+      const items = data?.items;
+      if (!data || !Array.isArray(items) || !items.length) {
+        throw new Error("Could not load this barcode");
+      }
+
+      const textItem = items.find((item) => item.kind === "text");
+      const imageItem = items.find((item) => item.kind === "image");
+      const videoItem = items.find((item) => item.kind === "video");
+      const urlItem = items.find((item) => item.kind === "url");
+      const isLinkOnly = items.length === 1 && Boolean(urlItem);
+
+      setTextIncluded(Boolean(textItem) && !isLinkOnly);
+      setTextValue(textItem?.content || "");
+
+      setImageIncluded(Boolean(imageItem));
+      setImageDataUrl(imageItem?.content || "");
+      setImageMeta(
+        imageItem
+          ? {
+              name: "Current image",
+              size: approxBytesFromDataUrl(imageItem.content),
+              type: imageItem.mimeType || "",
+            }
+          : null
+      );
+
+      setVideoIncluded(Boolean(videoItem));
+      setVideoDataUrl(videoItem?.content || "");
+      setVideoMeta(
+        videoItem
+          ? {
+              name: "Current video",
+              size: approxBytesFromDataUrl(videoItem.content),
+              type: videoItem.mimeType || "",
+            }
+          : null
+      );
+
+      setUrlIncluded(isLinkOnly);
+      setUrlValue(urlItem?.content || "");
+
+      // Preserve the saved sequence of the reorderable kinds, then append any
+      // that aren't present so they can still be toggled on while editing.
+      const orderedKinds = items
+        .map((item) => item.kind)
+        .filter((kind) => ["text", "image", "video"].includes(kind));
+      const nextOrder = [...new Set(orderedKinds)];
+      ["text", "image", "video"].forEach((kind) => {
+        if (!nextOrder.includes(kind)) nextOrder.push(kind);
+      });
+      setSectionOrder(nextOrder);
+
+      setLabel(data.label || "");
+      setEditingSlug(slug);
+      setResult(null);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+      if (videoInputRef.current) videoInputRef.current.value = "";
+
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+      toast.success("Loaded for editing");
+    } catch (error) {
+      toast.error(error.message || "Could not load this barcode");
+    } finally {
+      setLoadingEdit(false);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    handleReset();
+    toast.message("Switched to a new barcode");
+  };
+
   const handleGenerate = async (event) => {
     event.preventDefault();
     if (generating) return;
@@ -389,9 +495,15 @@ const BarcodeGenerator = () => {
 
     try {
       setGenerating(true);
-      const response = await createBarcode(payload);
+      const response = editingSlug
+        ? await updateBarcode(editingSlug, payload)
+        : await createBarcode(payload);
       const slug = response?.data?.slug;
-      if (!slug) throw new Error("Could not create barcode");
+      if (!slug) {
+        throw new Error(
+          editingSlug ? "Could not update barcode" : "Could not create barcode"
+        );
+      }
 
       const qrTarget = isLinkOnly
         ? items[0].content
@@ -417,10 +529,16 @@ const BarcodeGenerator = () => {
         moduleStyle,
         frameShape,
       });
-      toast.success("Barcode generated");
+      // Stay in edit mode for the resulting code so further tweaks update it in
+      // place instead of spawning duplicates.
+      setEditingSlug(slug);
+      toast.success(editingSlug ? "Barcode updated" : "Barcode generated");
       loadHistory();
     } catch (error) {
-      toast.error(error.message || "Could not generate barcode");
+      toast.error(
+        error.message ||
+          (editingSlug ? "Could not update barcode" : "Could not generate barcode")
+      );
     } finally {
       setGenerating(false);
     }
@@ -476,6 +594,7 @@ const BarcodeGenerator = () => {
     setVideoIncluded(false);
     setSectionOrder(["text", "image", "video"]);
     setResult(null);
+    setEditingSlug(null);
   };
 
   const includedCount =
@@ -720,6 +839,26 @@ const BarcodeGenerator = () => {
 
       <div className="barcode-shell">
         <section className="barcode-form-card">
+          {editingSlug && (
+            <div className="edit-banner" role="status">
+              <div className="edit-banner-text">
+                <strong>Editing /{editingSlug}</strong>
+                <span>
+                  Add, change, or remove any section — saving updates this
+                  existing code.
+                </span>
+              </div>
+              <button
+                type="button"
+                className="edit-banner-new"
+                onClick={handleCancelEdit}
+                disabled={generating}
+              >
+                Start new
+              </button>
+            </div>
+          )}
+
           <div className="barcode-summary">
             <span className="summary-pill">
               {includedCount} of 4 included
@@ -866,7 +1005,13 @@ const BarcodeGenerator = () => {
                 className="btn-primary"
                 disabled={generating || includedCount === 0}
               >
-                {generating ? "Generating..." : "Generate barcode"}
+                {generating
+                  ? editingSlug
+                    ? "Updating..."
+                    : "Generating..."
+                  : editingSlug
+                  ? "Update barcode"
+                  : "Generate barcode"}
               </button>
             </div>
           </form>
@@ -1020,6 +1165,14 @@ const BarcodeGenerator = () => {
                       Open
                     </Link>
                   )}
+                  <button
+                    type="button"
+                    className="history-edit"
+                    onClick={() => loadBarcodeForEdit(entry.slug)}
+                    disabled={loadingEdit}
+                  >
+                    Edit
+                  </button>
                   <button
                     type="button"
                     className="history-delete"

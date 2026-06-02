@@ -42,6 +42,57 @@
   padding: 22px;
 }
 
+.barcode-page .edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid #f3d27b;
+  background: #fff8e5;
+}
+
+.barcode-page .edit-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.barcode-page .edit-banner-text strong {
+  color: var(--color-brand-900);
+  font-size: 0.9rem;
+}
+
+.barcode-page .edit-banner-text span {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.barcode-page .edit-banner-new {
+  flex-shrink: 0;
+  background: var(--color-brand-900);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.barcode-page .edit-banner-new:hover:not(:disabled) {
+  background: #543d05;
+}
+
+.barcode-page .edit-banner-new:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .barcode-page .barcode-summary {
   display: flex;
   flex-wrap: wrap;
@@ -697,6 +748,28 @@
 
 .barcode-page .history-open:hover {
   background: #543d05;
+}
+
+.barcode-page .history-edit {
+  background: transparent;
+  color: var(--color-brand-900);
+  border: 1px solid var(--color-border-strong);
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.barcode-page .history-edit:hover:not(:disabled) {
+  background: #fff8e5;
+  border-color: var(--color-brand-500);
+}
+
+.barcode-page .history-edit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .barcode-page .history-delete {
