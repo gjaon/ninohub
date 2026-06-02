@@ -29,17 +29,24 @@ export const FRAME_SHAPES = [
   { id: "star", label: "Star" },
 ];
 
-// Per-shape: the silhouette outline colour, and the vertical band to search for
-// the embedded QR's center (fractions of height). The exact square size and
-// position are auto-fitted to the largest square that lies fully inside the
-// outline, so the real QR is always contained (never clipped) and as large as
-// possible for reliable scanning.
+// Per-shape tuning:
+//   centerBand   – vertical band (fractions of height) to search for the
+//                  embedded QR's center.
+//   embedScale   – how much to enlarge the embedded QR beyond the largest square
+//                  that fits strictly inside the outline. Narrow shapes (heart,
+//                  diamond, star) only fit a small inner square, so we grow the
+//                  real code so the scannable area survives downscaling. The
+//                  code is backed edge-to-edge in white (no visible margin) and
+//                  drawn unclipped, so it simply extends past the outline.
+//   embedOffsetY – vertical nudge (fraction of height; + = down) applied after
+//                  fitting. The heart uses this to drop the code clear of the
+//                  cleft ("V") at the top so the notch stays visible.
 const SHAPE_CONFIG = {
-  heart: { accent: "#ff2d55", centerBand: [0.36, 0.5] },
-  circle: { accent: "#3b5bff", centerBand: [0.5, 0.5] },
-  "rounded-square": { accent: "#059669", centerBand: [0.5, 0.5] },
-  diamond: { accent: "#f59e0b", centerBand: [0.5, 0.5] },
-  star: { accent: "#7c3aed", centerBand: [0.42, 0.5] },
+  heart: { centerBand: [0.36, 0.5], embedScale: 1.3, embedOffsetY: 0.08 },
+  circle: { centerBand: [0.5, 0.5], embedScale: 1.08, embedOffsetY: 0 },
+  "rounded-square": { centerBand: [0.5, 0.5], embedScale: 1.08, embedOffsetY: 0 },
+  diamond: { centerBand: [0.5, 0.5], embedScale: 1.32, embedOffsetY: 0 },
+  star: { centerBand: [0.42, 0.5], embedScale: 1.3, embedOffsetY: 0.04 },
 };
 
 const DEFAULTS = {
@@ -275,15 +282,21 @@ export const renderShapedQrToCanvas = (text, options = {}) => {
   const bw = size - margin * 2;
   const bh = size - margin * 2;
 
-  // Auto-fit the largest square that sits fully inside the silhouette, so the
-  // embedded QR touches the shape's borders and is never clipped.
+  // Auto-fit the largest square that sits fully inside the silhouette, then
+  // enlarge it by the shape's embedScale so the scannable area stays generous
+  // even on narrow shapes. The code is backed edge-to-edge in white and drawn
+  // UNCLIPPED, so growing past the outline never clips it; embedOffsetY then
+  // nudges it down (used by the heart to keep the top cleft uncovered).
   traceShape(ctx, shape, bx, by, bw, bh);
   const fit = fitSquare(ctx, shape, bx, by, bw, bh, cfg.centerBand);
-  const qrSide = fit.side;
+  const embedScale = cfg.embedScale || 1;
+  const offsetY = bh * (cfg.embedOffsetY || 0);
+  const qrSide = fit.side * embedScale;
   const cell = qrSide / qrSize;
   const qrLeft = bx + bw / 2 - qrSide / 2;
-  const qrTop = fit.cy - qrSide / 2;
-  // With no quiet zone the data modules start at the square's edge.
+  const qrTop = fit.cy - qrSide / 2 + offsetY;
+  // The data modules start at the square's edge; the code is backed edge-to-edge
+  // in white (no inset margin), so the surrounding texture abuts it cleanly.
   const contentLeft = qrLeft;
   const contentTop = qrTop;
 
@@ -304,8 +317,8 @@ export const renderShapedQrToCanvas = (text, options = {}) => {
   ctx.fill();
   ctx.restore();
 
-  // 2) Decorative module fill, clipped to the silhouette. Skip the real-QR
-  //    allocation (data + quiet ring) so the embedded code stays isolated.
+  // 2) Decorative module fill, clipped to the silhouette. Skip the real-QR data
+  //    cells so the embedded code stays isolated.
   ctx.save();
   traceShape(ctx, shape, bx, by, bw, bh);
   ctx.clip();
@@ -317,7 +330,7 @@ export const renderShapedQrToCanvas = (text, options = {}) => {
       const mcol = Math.round((x - contentLeft) / cell);
       const mrow = Math.round((y - contentTop) / cell);
       // Inside the real QR's data area? Leave it to the matrix draw below so the
-      // decorative fill abuts the code with no gap.
+      // decorative fill abuts the code edge-to-edge with no light gap.
       const inQrData =
         mcol >= 0 && mcol < qrSize && mrow >= 0 && mrow < qrSize;
       if (inQrData) continue;
@@ -328,18 +341,17 @@ export const renderShapedQrToCanvas = (text, options = {}) => {
   }
   ctx.restore();
 
-  // 3) The real, scannable QR — drawn UNCLIPPED so corners are never trimmed,
-  //    edge-to-edge so it blends straight into the surrounding texture.
-  drawSquareMatrix(ctx, qr.modules, qrLeft, qrTop, qrSide, opts, quiet);
-
-  // 4) Crisp silhouette outline so the shape stays legible on any background.
+  // 3) White backing exactly the size of the embedded code (no extra margin, so
+  //    no visible white border) and drawn UNCLIPPED. It gives the code's light
+  //    modules a clean background even where the enlarged square extends past
+  //    the outline — the scannable area simply grows into that space.
   ctx.save();
-  ctx.lineWidth = Math.max(2, size * 0.006);
-  ctx.strokeStyle = cfg.accent;
-  ctx.lineJoin = "round";
-  traceShape(ctx, shape, bx, by, bw, bh);
-  ctx.stroke();
+  ctx.fillStyle = opts.light;
+  ctx.fillRect(qrLeft, qrTop, qrSide, qrSide);
   ctx.restore();
+
+  // 4) The real, scannable QR — drawn UNCLIPPED so corners are never trimmed.
+  drawSquareMatrix(ctx, qr.modules, qrLeft, qrTop, qrSide, opts, quiet);
 
   return canvas;
 };

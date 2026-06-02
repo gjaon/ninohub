@@ -105,6 +105,51 @@
   margin-top: 2px;
 }
 
+.barcode-page .section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.barcode-page .section-reorder {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.barcode-page .reorder-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--color-text);
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+}
+
+.barcode-page .reorder-btn:hover:not(:disabled) {
+  border-color: var(--color-brand-500);
+  background: var(--color-surface);
+}
+
+.barcode-page .reorder-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.barcode-page .reorder-hint {
+  margin: 0 0 4px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
 .barcode-page .section-toggle {
   display: inline-flex;
   align-items: center;

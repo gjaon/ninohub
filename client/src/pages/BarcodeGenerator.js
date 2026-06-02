@@ -50,19 +50,55 @@ const formatRelative = (value) => {
   });
 };
 
-const SectionHeader = ({ title, subtitle, included, onToggle }) => (
+const SectionHeader = ({
+  title,
+  subtitle,
+  included,
+  onToggle,
+  showReorder = false,
+  canMoveUp = false,
+  canMoveDown = false,
+  onMoveUp,
+  onMoveDown,
+}) => (
   <div className="section-header">
     <div className="section-title">
       <h3>{title}</h3>
       <span>{subtitle}</span>
     </div>
-    <label className="section-toggle">
-      <input type="checkbox" checked={included} onChange={onToggle} />
-      <span className="toggle-track" aria-hidden="true">
-        <span className="toggle-thumb" />
-      </span>
-      <span className="toggle-label">{included ? "Included" : "Add"}</span>
-    </label>
+    <div className="section-actions">
+      {showReorder && (
+        <div className="section-reorder" aria-label={`Reorder ${title}`}>
+          <button
+            type="button"
+            className="reorder-btn"
+            onClick={onMoveUp}
+            disabled={!canMoveUp}
+            title="Move earlier"
+            aria-label={`Move ${title} earlier`}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            className="reorder-btn"
+            onClick={onMoveDown}
+            disabled={!canMoveDown}
+            title="Move later"
+            aria-label={`Move ${title} later`}
+          >
+            ↓
+          </button>
+        </div>
+      )}
+      <label className="section-toggle">
+        <input type="checkbox" checked={included} onChange={onToggle} />
+        <span className="toggle-track" aria-hidden="true">
+          <span className="toggle-thumb" />
+        </span>
+        <span className="toggle-label">{included ? "Included" : "Add"}</span>
+      </label>
+    </div>
   </div>
 );
 
@@ -78,6 +114,11 @@ const BarcodeGenerator = () => {
   const [urlIncluded, setUrlIncluded] = useState(false);
   const [imageIncluded, setImageIncluded] = useState(false);
   const [videoIncluded, setVideoIncluded] = useState(false);
+
+  // Display/scan order of the reorderable sections. The admin can shuffle these
+  // so scanners reveal content in their chosen sequence. A standalone Link is
+  // exclusive, so it's not part of this list.
+  const [sectionOrder, setSectionOrder] = useState(["text", "image", "video"]);
 
   const [textValue, setTextValue] = useState("");
   const [urlValue, setUrlValue] = useState("");
@@ -267,21 +308,37 @@ const BarcodeGenerator = () => {
     resetResult();
   };
 
+  const isKindIncluded = (kind) =>
+    (kind === "text" && textIncluded) ||
+    (kind === "image" && imageIncluded) ||
+    (kind === "video" && videoIncluded);
+
+  // Swap a section with its nearest *included* neighbour in the chosen
+  // direction (-1 up, +1 down), so reordering only shuffles the items that will
+  // actually appear on the scan page.
+  const moveSection = (kind, dir) => {
+    setSectionOrder((order) => {
+      const idx = order.indexOf(kind);
+      if (idx === -1) return order;
+      let j = idx + dir;
+      while (j >= 0 && j < order.length && !isKindIncluded(order[j])) {
+        j += dir;
+      }
+      if (j < 0 || j >= order.length) return order;
+      const next = [...order];
+      [next[idx], next[j]] = [next[j], next[idx]];
+      return next;
+    });
+    resetResult();
+  };
+
   const handleGenerate = async (event) => {
     event.preventDefault();
     if (generating) return;
 
     const items = [];
 
-    if (textIncluded) {
-      const trimmed = textValue.trim();
-      if (!trimmed) {
-        toast.error("Add some text or remove the text section");
-        return;
-      }
-      items.push({ kind: "text", content: trimmed });
-    }
-
+    // A standalone Link is exclusive — it takes over the whole code.
     if (urlIncluded) {
       const trimmed = urlValue.trim();
       try {
@@ -296,20 +353,28 @@ const BarcodeGenerator = () => {
       items.push({ kind: "url", content: trimmed });
     }
 
-    if (imageIncluded) {
-      if (!imageDataUrl) {
-        toast.error("Choose an image or remove the image section");
-        return;
+    // Text, image and video are emitted in the admin-chosen order.
+    for (const kind of sectionOrder) {
+      if (kind === "text" && textIncluded) {
+        const trimmed = textValue.trim();
+        if (!trimmed) {
+          toast.error("Add some text or remove the text section");
+          return;
+        }
+        items.push({ kind: "text", content: trimmed });
+      } else if (kind === "image" && imageIncluded) {
+        if (!imageDataUrl) {
+          toast.error("Choose an image or remove the image section");
+          return;
+        }
+        items.push({ kind: "image", content: imageDataUrl });
+      } else if (kind === "video" && videoIncluded) {
+        if (!videoDataUrl) {
+          toast.error("Choose a video or remove the video section");
+          return;
+        }
+        items.push({ kind: "video", content: videoDataUrl });
       }
-      items.push({ kind: "image", content: imageDataUrl });
-    }
-
-    if (videoIncluded) {
-      if (!videoDataUrl) {
-        toast.error("Choose a video or remove the video section");
-        return;
-      }
-      items.push({ kind: "video", content: videoDataUrl });
     }
 
     if (!items.length) {
@@ -409,6 +474,7 @@ const BarcodeGenerator = () => {
     setUrlIncluded(false);
     setImageIncluded(false);
     setVideoIncluded(false);
+    setSectionOrder(["text", "image", "video"]);
     setResult(null);
   };
 
@@ -417,6 +483,210 @@ const BarcodeGenerator = () => {
     Number(urlIncluded) +
     Number(imageIncluded) +
     Number(videoIncluded);
+
+  // Reorder controls only make sense once two or more sections are included.
+  const includedKinds = sectionOrder.filter(isKindIncluded);
+  const reorderProps = (kind) => {
+    const pos = includedKinds.indexOf(kind);
+    return {
+      showReorder: includedKinds.length > 1 && pos !== -1,
+      canMoveUp: pos > 0,
+      canMoveDown: pos !== -1 && pos < includedKinds.length - 1,
+      onMoveUp: () => moveSection(kind, -1),
+      onMoveDown: () => moveSection(kind, 1),
+    };
+  };
+
+  const renderTextSection = () => (
+    <fieldset
+      key="text"
+      className={`barcode-section ${textIncluded ? "active" : ""}`}
+    >
+      <SectionHeader
+        title="Text"
+        subtitle="Notes, messages, contact info"
+        included={textIncluded}
+        onToggle={handleToggleText}
+        {...reorderProps("text")}
+      />
+      {textIncluded && (
+        <div className="form-group">
+          <textarea
+            id="text-input"
+            value={textValue}
+            onChange={(e) => {
+              setTextValue(e.target.value);
+              resetResult();
+            }}
+            placeholder="Type or paste anything — notes, contact info, a message..."
+            rows="5"
+            maxLength={4000}
+          />
+          <span className="char-count">
+            {textValue.length}/4000 characters
+          </span>
+        </div>
+      )}
+    </fieldset>
+  );
+
+  const renderImageSection = () => (
+    <fieldset
+      key="image"
+      className={`barcode-section ${imageIncluded ? "active" : ""}`}
+    >
+      <SectionHeader
+        title="Image"
+        subtitle="PNG, JPG, WebP, GIF, SVG up to 2MB"
+        included={imageIncluded}
+        onToggle={handleToggleImage}
+        {...reorderProps("image")}
+      />
+      {imageIncluded && (
+        <div className="form-group">
+          {!imageDataUrl ? (
+            <div
+              className="image-dropzone"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleImageFile(e.dataTransfer.files?.[0]);
+              }}
+              onClick={() => imageInputRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  imageInputRef.current?.click();
+                }
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <circle cx="9" cy="9" r="2" />
+                <path d="M21 15l-5-5L5 21" />
+              </svg>
+              <p>Click to upload or drag and drop</p>
+              <span>PNG, JPG, WebP, GIF, SVG · up to 2MB</span>
+            </div>
+          ) : (
+            <div className="image-preview">
+              <img src={imageDataUrl} alt={imageMeta?.name || "Preview"} />
+              <div className="image-meta">
+                <span className="image-name">{imageMeta?.name}</span>
+                <span className="image-size">
+                  {(imageMeta?.size / 1024).toFixed(1)} KB
+                </span>
+                <button
+                  type="button"
+                  className="image-remove"
+                  onClick={clearImage}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          )}
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept={ALLOWED_IMAGE_TYPES.join(",")}
+            onChange={(e) => handleImageFile(e.target.files?.[0])}
+            hidden
+          />
+        </div>
+      )}
+    </fieldset>
+  );
+
+  const renderVideoSection = () => (
+    <fieldset
+      key="video"
+      className={`barcode-section ${videoIncluded ? "active" : ""}`}
+    >
+      <SectionHeader
+        title="Video"
+        subtitle="MP4, WebM, OGG, MOV up to 6MB"
+        included={videoIncluded}
+        onToggle={handleToggleVideo}
+        {...reorderProps("video")}
+      />
+      {videoIncluded && (
+        <div className="form-group">
+          {!videoDataUrl ? (
+            <div
+              className="image-dropzone"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleVideoFile(e.dataTransfer.files?.[0]);
+              }}
+              onClick={() => videoInputRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  videoInputRef.current?.click();
+                }
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                aria-hidden="true"
+              >
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" />
+              </svg>
+              <p>Click to upload or drag and drop</p>
+              <span>MP4, WebM, OGG, MOV · up to 6MB</span>
+            </div>
+          ) : (
+            <div className="image-preview">
+              <video src={videoDataUrl} muted playsInline preload="metadata" />
+              <div className="image-meta">
+                <span className="image-name">{videoMeta?.name}</span>
+                <span className="image-size">
+                  {(videoMeta?.size / (1024 * 1024)).toFixed(2)} MB
+                </span>
+                <button
+                  type="button"
+                  className="image-remove"
+                  onClick={clearVideo}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          )}
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept={ALLOWED_VIDEO_TYPES.join(",")}
+            onChange={(e) => handleVideoFile(e.target.files?.[0])}
+            hidden
+          />
+        </div>
+      )}
+    </fieldset>
+  );
+
+  const renderSection = (kind) => {
+    if (kind === "text") return renderTextSection();
+    if (kind === "image") return renderImageSection();
+    if (kind === "video") return renderVideoSection();
+    return null;
+  };
 
   if (!isAdmin) {
     return (
@@ -460,34 +730,13 @@ const BarcodeGenerator = () => {
           </div>
 
           <form className="barcode-form" onSubmit={handleGenerate}>
-            <fieldset
-              className={`barcode-section ${textIncluded ? "active" : ""}`}
-            >
-              <SectionHeader
-                title="Text"
-                subtitle="Notes, messages, contact info"
-                included={textIncluded}
-                onToggle={handleToggleText}
-              />
-              {textIncluded && (
-                <div className="form-group">
-                  <textarea
-                    id="text-input"
-                    value={textValue}
-                    onChange={(e) => {
-                      setTextValue(e.target.value);
-                      resetResult();
-                    }}
-                    placeholder="Type or paste anything — notes, contact info, a message..."
-                    rows="5"
-                    maxLength={4000}
-                  />
-                  <span className="char-count">
-                    {textValue.length}/4000 characters
-                  </span>
-                </div>
-              )}
-            </fieldset>
+            {includedKinds.length > 1 && (
+              <p className="reorder-hint">
+                Use the ↑ ↓ arrows to set the order content appears when scanned.
+              </p>
+            )}
+
+            {sectionOrder.map((kind) => renderSection(kind))}
 
             <fieldset
               className={`barcode-section ${urlIncluded ? "active" : ""}`}
@@ -516,157 +765,6 @@ const BarcodeGenerator = () => {
                     A link barcode is exclusive — text, image, and video are
                     turned off automatically.
                   </span>
-                </div>
-              )}
-            </fieldset>
-
-            <fieldset
-              className={`barcode-section ${imageIncluded ? "active" : ""}`}
-            >
-              <SectionHeader
-                title="Image"
-                subtitle="PNG, JPG, WebP, GIF, SVG up to 2MB"
-                included={imageIncluded}
-                onToggle={handleToggleImage}
-              />
-              {imageIncluded && (
-                <div className="form-group">
-                  {!imageDataUrl ? (
-                    <div
-                      className="image-dropzone"
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        handleImageFile(e.dataTransfer.files?.[0]);
-                      }}
-                      onClick={() => imageInputRef.current?.click()}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          imageInputRef.current?.click();
-                        }
-                      }}
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.6"
-                        aria-hidden="true"
-                      >
-                        <rect x="3" y="3" width="18" height="18" rx="2" />
-                        <circle cx="9" cy="9" r="2" />
-                        <path d="M21 15l-5-5L5 21" />
-                      </svg>
-                      <p>Click to upload or drag and drop</p>
-                      <span>PNG, JPG, WebP, GIF, SVG · up to 2MB</span>
-                    </div>
-                  ) : (
-                    <div className="image-preview">
-                      <img
-                        src={imageDataUrl}
-                        alt={imageMeta?.name || "Preview"}
-                      />
-                      <div className="image-meta">
-                        <span className="image-name">{imageMeta?.name}</span>
-                        <span className="image-size">
-                          {(imageMeta?.size / 1024).toFixed(1)} KB
-                        </span>
-                        <button
-                          type="button"
-                          className="image-remove"
-                          onClick={clearImage}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <input
-                    ref={imageInputRef}
-                    type="file"
-                    accept={ALLOWED_IMAGE_TYPES.join(",")}
-                    onChange={(e) => handleImageFile(e.target.files?.[0])}
-                    hidden
-                  />
-                </div>
-              )}
-            </fieldset>
-
-            <fieldset
-              className={`barcode-section ${videoIncluded ? "active" : ""}`}
-            >
-              <SectionHeader
-                title="Video"
-                subtitle="MP4, WebM, OGG, MOV up to 6MB"
-                included={videoIncluded}
-                onToggle={handleToggleVideo}
-              />
-              {videoIncluded && (
-                <div className="form-group">
-                  {!videoDataUrl ? (
-                    <div
-                      className="image-dropzone"
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        handleVideoFile(e.dataTransfer.files?.[0]);
-                      }}
-                      onClick={() => videoInputRef.current?.click()}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          videoInputRef.current?.click();
-                        }
-                      }}
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.6"
-                        aria-hidden="true"
-                      >
-                        <polygon points="23 7 16 12 23 17 23 7" />
-                        <rect x="1" y="5" width="15" height="14" rx="2" />
-                      </svg>
-                      <p>Click to upload or drag and drop</p>
-                      <span>MP4, WebM, OGG, MOV · up to 6MB</span>
-                    </div>
-                  ) : (
-                    <div className="image-preview">
-                      <video
-                        src={videoDataUrl}
-                        muted
-                        playsInline
-                        preload="metadata"
-                      />
-                      <div className="image-meta">
-                        <span className="image-name">{videoMeta?.name}</span>
-                        <span className="image-size">
-                          {(videoMeta?.size / (1024 * 1024)).toFixed(2)} MB
-                        </span>
-                        <button
-                          type="button"
-                          className="image-remove"
-                          onClick={clearVideo}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <input
-                    ref={videoInputRef}
-                    type="file"
-                    accept={ALLOWED_VIDEO_TYPES.join(",")}
-                    onChange={(e) => handleVideoFile(e.target.files?.[0])}
-                    hidden
-                  />
                 </div>
               )}
             </fieldset>
