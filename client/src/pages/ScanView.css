@@ -151,12 +151,13 @@
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
-  background: linear-gradient(180deg, #fffdf5, #fef6e0);
+  /* Background and text colour are set inline from the note's chosen colour so
+     the pair always matches (e.g. white text on red). Defaults live in JS. */
+  background: #fffdf5;
   color: #2a2417;
   border-radius: 20px;
   padding: 36px 32px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-  transform: rotate(-1.2deg);
 }
 
 .scan-note-card p {

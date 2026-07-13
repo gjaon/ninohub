@@ -14,10 +14,16 @@ import {
   MODULE_STYLES,
   FRAME_SHAPES,
 } from "../utils/shapedQrCode";
+import {
+  TEXT_BG_PRESETS,
+  DEFAULT_TEXT_BG,
+  getContrastText,
+} from "../utils/textContrast";
 import "./BarcodeGenerator.css";
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
+const MAX_BLOCKS = 12;
 const ALLOWED_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",
@@ -37,6 +43,24 @@ const parseAdminAllowlist = () =>
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean);
+
+let blockCounter = 0;
+const makeBlockId = () => {
+  blockCounter += 1;
+  return `blk-${Date.now().toString(36)}-${blockCounter}`;
+};
+
+const makeBlock = (kind, overrides = {}) => ({
+  id: makeBlockId(),
+  kind,
+  content: "",
+  mimeType: "",
+  bgColor: kind === "text" ? DEFAULT_TEXT_BG : "",
+  meta: null,
+  ...overrides,
+});
+
+const KIND_LABEL = { text: "Text", image: "Image", video: "Video", url: "Link" };
 
 // Rough byte size of a base64 data URL — used to show a sensible size on the
 // media preview when loading an existing barcode for editing (we no longer
@@ -66,58 +90,6 @@ const formatRelative = (value) => {
   });
 };
 
-const SectionHeader = ({
-  title,
-  subtitle,
-  included,
-  onToggle,
-  showReorder = false,
-  canMoveUp = false,
-  canMoveDown = false,
-  onMoveUp,
-  onMoveDown,
-}) => (
-  <div className="section-header">
-    <div className="section-title">
-      <h3>{title}</h3>
-      <span>{subtitle}</span>
-    </div>
-    <div className="section-actions">
-      {showReorder && (
-        <div className="section-reorder" aria-label={`Reorder ${title}`}>
-          <button
-            type="button"
-            className="reorder-btn"
-            onClick={onMoveUp}
-            disabled={!canMoveUp}
-            title="Move earlier"
-            aria-label={`Move ${title} earlier`}
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            className="reorder-btn"
-            onClick={onMoveDown}
-            disabled={!canMoveDown}
-            title="Move later"
-            aria-label={`Move ${title} later`}
-          >
-            ↓
-          </button>
-        </div>
-      )}
-      <label className="section-toggle">
-        <input type="checkbox" checked={included} onChange={onToggle} />
-        <span className="toggle-track" aria-hidden="true">
-          <span className="toggle-thumb" />
-        </span>
-        <span className="toggle-label">{included ? "Included" : "Add"}</span>
-      </label>
-    </div>
-  </div>
-);
-
 const BarcodeGenerator = () => {
   const { isAuthenticated, currentUser } = useSelector((state) => state.user);
   const adminAllowlist = useMemo(parseAdminAllowlist, []);
@@ -126,27 +98,19 @@ const BarcodeGenerator = () => {
     (Boolean(currentUser?.isAdmin) ||
       adminAllowlist.includes(String(currentUser?.email || "").toLowerCase()));
 
-  const [textIncluded, setTextIncluded] = useState(true);
+  // Ordered list of content blocks. Multiple blocks of the same kind are
+  // allowed and their order is exactly what a scanner sees. A standalone Link
+  // is exclusive, so it lives outside this list.
+  const [blocks, setBlocks] = useState(() => [makeBlock("text")]);
   const [urlIncluded, setUrlIncluded] = useState(false);
-  const [imageIncluded, setImageIncluded] = useState(false);
-  const [videoIncluded, setVideoIncluded] = useState(false);
-
-  // Display/scan order of the reorderable sections. The admin can shuffle these
-  // so scanners reveal content in their chosen sequence. A standalone Link is
-  // exclusive, so it's not part of this list.
-  const [sectionOrder, setSectionOrder] = useState(["text", "image", "video"]);
-
-  const [textValue, setTextValue] = useState("");
   const [urlValue, setUrlValue] = useState("");
-  const [imageDataUrl, setImageDataUrl] = useState("");
-  const [imageMeta, setImageMeta] = useState(null);
-  const [videoDataUrl, setVideoDataUrl] = useState("");
-  const [videoMeta, setVideoMeta] = useState(null);
+
   const [label, setLabel] = useState("");
   const [moduleStyle, setModuleStyle] = useState("square");
   const [frameShape, setFrameShape] = useState("heart");
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
 
   // When set, the form edits an existing barcode (same slug) instead of
   // creating a new one. Generating then PUTs over the existing record.
@@ -159,8 +123,8 @@ const BarcodeGenerator = () => {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
-  const imageInputRef = useRef(null);
-  const videoInputRef = useRef(null);
+  // Hidden file inputs, one per media block, keyed by block id.
+  const fileInputs = useRef({});
 
   const scanOrigin = useMemo(() => {
     const configured = (process.env.REACT_APP_SCAN_ORIGIN || "").trim();
@@ -217,6 +181,15 @@ const BarcodeGenerator = () => {
     return () => document.removeEventListener("keydown", onKey);
   }, [pendingDelete, deleting]);
 
+  useEffect(() => {
+    if (!showPreview) return undefined;
+    const onKey = (event) => {
+      if (event.key === "Escape") setShowPreview(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showPreview]);
+
   const handleConfirmDelete = async () => {
     if (!pendingDelete || deleting) return;
     setDeleting(true);
@@ -236,128 +209,91 @@ const BarcodeGenerator = () => {
     }
   };
 
-  const handleImageFile = async (file) => {
-    if (!file) return;
-    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-      toast.error("Use a PNG, JPG, WebP, GIF, or SVG image");
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      toast.error("Image must be under 2MB");
-      return;
-    }
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      setImageDataUrl(dataUrl);
-      setImageMeta({ name: file.name, size: file.size, type: file.type });
-      setImageIncluded(true);
-      resetResult();
-    } catch (error) {
-      toast.error(error.message || "Could not load image");
-    }
-  };
+  // ---- Block operations ------------------------------------------------
 
-  const handleVideoFile = async (file) => {
-    if (!file) return;
-    if (!ALLOWED_VIDEO_TYPES.includes(file.type)) {
-      toast.error("Use an MP4, WebM, OGG, or MOV video");
-      return;
-    }
-    if (file.size > MAX_VIDEO_BYTES) {
-      toast.error("Video must be under 6MB");
-      return;
-    }
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      setVideoDataUrl(dataUrl);
-      setVideoMeta({ name: file.name, size: file.size, type: file.type });
-      setVideoIncluded(true);
-      resetResult();
-    } catch (error) {
-      toast.error(error.message || "Could not load video");
-    }
-  };
-
-  const clearImage = () => {
-    setImageDataUrl("");
-    setImageMeta(null);
-    if (imageInputRef.current) imageInputRef.current.value = "";
+  const updateBlock = (id, patch) => {
+    setBlocks((rows) =>
+      rows.map((row) => (row.id === id ? { ...row, ...patch } : row))
+    );
     resetResult();
   };
 
-  const clearVideo = () => {
-    setVideoDataUrl("");
-    setVideoMeta(null);
-    if (videoInputRef.current) videoInputRef.current.value = "";
+  const removeBlock = (id) => {
+    setBlocks((rows) => rows.filter((row) => row.id !== id));
+    delete fileInputs.current[id];
     resetResult();
   };
 
-  const handleToggleText = () => {
-    setTextIncluded((value) => {
-      const next = !value;
-      if (next) setUrlIncluded(false);
-      return next;
-    });
-    resetResult();
-  };
-
-  const handleToggleUrl = () => {
-    setUrlIncluded((value) => {
-      const next = !value;
-      if (next) {
-        setTextIncluded(false);
-        setImageIncluded(false);
-        setVideoIncluded(false);
-      }
-      return next;
-    });
-    resetResult();
-  };
-
-  const handleToggleImage = () => {
-    setImageIncluded((value) => {
-      const next = !value;
-      if (next) setUrlIncluded(false);
-      return next;
-    });
-    resetResult();
-  };
-
-  const handleToggleVideo = () => {
-    setVideoIncluded((value) => {
-      const next = !value;
-      if (next) setUrlIncluded(false);
-      return next;
-    });
-    resetResult();
-  };
-
-  const isKindIncluded = (kind) =>
-    (kind === "text" && textIncluded) ||
-    (kind === "image" && imageIncluded) ||
-    (kind === "video" && videoIncluded);
-
-  // Swap a section with its nearest *included* neighbour in the chosen
-  // direction (-1 up, +1 down), so reordering only shuffles the items that will
-  // actually appear on the scan page.
-  const moveSection = (kind, dir) => {
-    setSectionOrder((order) => {
-      const idx = order.indexOf(kind);
-      if (idx === -1) return order;
-      let j = idx + dir;
-      while (j >= 0 && j < order.length && !isKindIncluded(order[j])) {
-        j += dir;
-      }
-      if (j < 0 || j >= order.length) return order;
-      const next = [...order];
+  const moveBlock = (id, dir) => {
+    setBlocks((rows) => {
+      const idx = rows.findIndex((row) => row.id === id);
+      const j = idx + dir;
+      if (idx === -1 || j < 0 || j >= rows.length) return rows;
+      const next = [...rows];
       [next[idx], next[j]] = [next[j], next[idx]];
       return next;
     });
     resetResult();
   };
 
-  // Pull an existing barcode into the form so every element can be changed,
-  // added, or removed before saving back over the same slug.
+  const addBlock = (kind) => {
+    if (urlIncluded) {
+      toast.error("Turn off the standalone link to add content");
+      return;
+    }
+    if (blocks.length >= MAX_BLOCKS) {
+      toast.error(`A barcode can hold up to ${MAX_BLOCKS} items`);
+      return;
+    }
+    setBlocks((rows) => [...rows, makeBlock(kind)]);
+    resetResult();
+  };
+
+  const handleBlockFile = async (id, kind, file) => {
+    if (!file) return;
+    const allowed = kind === "image" ? ALLOWED_IMAGE_TYPES : ALLOWED_VIDEO_TYPES;
+    const maxBytes = kind === "image" ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES;
+    if (!allowed.includes(file.type)) {
+      toast.error(
+        kind === "image"
+          ? "Use a PNG, JPG, WebP, GIF, or SVG image"
+          : "Use an MP4, WebM, OGG, or MOV video"
+      );
+      return;
+    }
+    if (file.size > maxBytes) {
+      toast.error(
+        kind === "image" ? "Image must be under 2MB" : "Video must be under 6MB"
+      );
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateBlock(id, {
+        content: dataUrl,
+        mimeType: file.type,
+        meta: { name: file.name, size: file.size, type: file.type },
+      });
+    } catch (error) {
+      toast.error(error.message || "Could not load file");
+    }
+  };
+
+  const clearBlockFile = (id) => {
+    if (fileInputs.current[id]) fileInputs.current[id].value = "";
+    updateBlock(id, { content: "", mimeType: "", meta: null });
+  };
+
+  const handleToggleUrl = () => {
+    setUrlIncluded((value) => {
+      const next = !value;
+      resetResult();
+      return next;
+    });
+  };
+
+  // ---- Load an existing barcode into the builder ----------------------
+
   const loadBarcodeForEdit = async (slug) => {
     if (!slug || loadingEdit) return;
     setLoadingEdit(true);
@@ -369,58 +305,43 @@ const BarcodeGenerator = () => {
         throw new Error("Could not load this barcode");
       }
 
-      const textItem = items.find((item) => item.kind === "text");
-      const imageItem = items.find((item) => item.kind === "image");
-      const videoItem = items.find((item) => item.kind === "video");
       const urlItem = items.find((item) => item.kind === "url");
       const isLinkOnly = items.length === 1 && Boolean(urlItem);
 
-      setTextIncluded(Boolean(textItem) && !isLinkOnly);
-      setTextValue(textItem?.content || "");
+      if (isLinkOnly) {
+        setUrlIncluded(true);
+        setUrlValue(urlItem.content || "");
+        setBlocks([]);
+      } else {
+        setUrlIncluded(false);
+        setUrlValue("");
+        const loaded = items
+          .filter((item) => ["text", "image", "video"].includes(item.kind))
+          .map((item) =>
+            makeBlock(item.kind, {
+              content: item.content || "",
+              mimeType: item.mimeType || "",
+              bgColor:
+                item.kind === "text"
+                  ? item.bgColor || DEFAULT_TEXT_BG
+                  : "",
+              meta:
+                item.kind === "image" || item.kind === "video"
+                  ? {
+                      name: `Current ${item.kind}`,
+                      size: approxBytesFromDataUrl(item.content),
+                      type: item.mimeType || "",
+                    }
+                  : null,
+            })
+          );
+        setBlocks(loaded.length ? loaded : [makeBlock("text")]);
+      }
 
-      setImageIncluded(Boolean(imageItem));
-      setImageDataUrl(imageItem?.content || "");
-      setImageMeta(
-        imageItem
-          ? {
-              name: "Current image",
-              size: approxBytesFromDataUrl(imageItem.content),
-              type: imageItem.mimeType || "",
-            }
-          : null
-      );
-
-      setVideoIncluded(Boolean(videoItem));
-      setVideoDataUrl(videoItem?.content || "");
-      setVideoMeta(
-        videoItem
-          ? {
-              name: "Current video",
-              size: approxBytesFromDataUrl(videoItem.content),
-              type: videoItem.mimeType || "",
-            }
-          : null
-      );
-
-      setUrlIncluded(isLinkOnly);
-      setUrlValue(urlItem?.content || "");
-
-      // Preserve the saved sequence of the reorderable kinds, then append any
-      // that aren't present so they can still be toggled on while editing.
-      const orderedKinds = items
-        .map((item) => item.kind)
-        .filter((kind) => ["text", "image", "video"].includes(kind));
-      const nextOrder = [...new Set(orderedKinds)];
-      ["text", "image", "video"].forEach((kind) => {
-        if (!nextOrder.includes(kind)) nextOrder.push(kind);
-      });
-      setSectionOrder(nextOrder);
-
+      fileInputs.current = {};
       setLabel(data.label || "");
       setEditingSlug(slug);
       setResult(null);
-      if (imageInputRef.current) imageInputRef.current.value = "";
-      if (videoInputRef.current) videoInputRef.current.value = "";
 
       if (typeof window !== "undefined") {
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -438,13 +359,9 @@ const BarcodeGenerator = () => {
     toast.message("Switched to a new barcode");
   };
 
-  const handleGenerate = async (event) => {
-    event.preventDefault();
-    if (generating) return;
-
-    const items = [];
-
-    // A standalone Link is exclusive — it takes over the whole code.
+  // Build the ordered items array from the current builder state, validating as
+  // we go. Returns null (after surfacing a toast) when something is missing.
+  const buildItems = () => {
     if (urlIncluded) {
       const trimmed = urlValue.trim();
       try {
@@ -454,39 +371,52 @@ const BarcodeGenerator = () => {
         }
       } catch (_error) {
         toast.error("Enter a valid http or https URL");
-        return;
+        return null;
       }
-      items.push({ kind: "url", content: trimmed });
+      return [{ kind: "url", content: trimmed }];
     }
 
-    // Text, image and video are emitted in the admin-chosen order.
-    for (const kind of sectionOrder) {
-      if (kind === "text" && textIncluded) {
-        const trimmed = textValue.trim();
+    const items = [];
+    for (const block of blocks) {
+      if (block.kind === "text") {
+        const trimmed = block.content.trim();
         if (!trimmed) {
-          toast.error("Add some text or remove the text section");
-          return;
+          toast.error("Add some text or remove the text block");
+          return null;
         }
-        items.push({ kind: "text", content: trimmed });
-      } else if (kind === "image" && imageIncluded) {
-        if (!imageDataUrl) {
-          toast.error("Choose an image or remove the image section");
-          return;
+        items.push({
+          kind: "text",
+          content: trimmed,
+          bgColor: block.bgColor || DEFAULT_TEXT_BG,
+        });
+      } else if (block.kind === "image") {
+        if (!block.content) {
+          toast.error("Choose an image or remove the image block");
+          return null;
         }
-        items.push({ kind: "image", content: imageDataUrl });
-      } else if (kind === "video" && videoIncluded) {
-        if (!videoDataUrl) {
-          toast.error("Choose a video or remove the video section");
-          return;
+        items.push({ kind: "image", content: block.content });
+      } else if (block.kind === "video") {
+        if (!block.content) {
+          toast.error("Choose a video or remove the video block");
+          return null;
         }
-        items.push({ kind: "video", content: videoDataUrl });
+        items.push({ kind: "video", content: block.content });
       }
     }
 
     if (!items.length) {
-      toast.error("Include at least one item");
-      return;
+      toast.error("Add at least one block of content");
+      return null;
     }
+    return items;
+  };
+
+  const handleGenerate = async (event) => {
+    event.preventDefault();
+    if (generating) return;
+
+    const items = buildItems();
+    if (!items) return;
 
     const payload = { items };
     if (label.trim()) payload.label = label.trim();
@@ -581,230 +511,221 @@ const BarcodeGenerator = () => {
   };
 
   const handleReset = () => {
-    setTextValue("");
+    setBlocks([makeBlock("text")]);
+    setUrlIncluded(false);
     setUrlValue("");
-    clearImage();
-    clearVideo();
     setLabel("");
     setModuleStyle("square");
     setFrameShape("heart");
-    setTextIncluded(true);
-    setUrlIncluded(false);
-    setImageIncluded(false);
-    setVideoIncluded(false);
-    setSectionOrder(["text", "image", "video"]);
     setResult(null);
     setEditingSlug(null);
+    fileInputs.current = {};
   };
 
-  const includedCount =
-    Number(textIncluded) +
-    Number(urlIncluded) +
-    Number(imageIncluded) +
-    Number(videoIncluded);
+  // Preview reflects exactly what a scanner will see. A standalone link has no
+  // on-page content (it redirects), so we preview the blocks.
+  const previewItems = urlIncluded
+    ? urlValue.trim()
+      ? [{ kind: "url", content: urlValue.trim() }]
+      : []
+    : blocks
+        .filter((b) => b.content && (b.kind !== "text" || b.content.trim()))
+        .map((b) => ({
+          kind: b.kind,
+          content: b.content,
+          mimeType: b.mimeType,
+          bgColor: b.bgColor,
+        }));
 
-  // Reorder controls only make sense once two or more sections are included.
-  const includedKinds = sectionOrder.filter(isKindIncluded);
-  const reorderProps = (kind) => {
-    const pos = includedKinds.indexOf(kind);
-    return {
-      showReorder: includedKinds.length > 1 && pos !== -1,
-      canMoveUp: pos > 0,
-      canMoveDown: pos !== -1 && pos < includedKinds.length - 1,
-      onMoveUp: () => moveSection(kind, -1),
-      onMoveDown: () => moveSection(kind, 1),
-    };
-  };
+  const includedCount = urlIncluded ? 1 : blocks.length;
 
-  const renderTextSection = () => (
-    <fieldset
-      key="text"
-      className={`barcode-section ${textIncluded ? "active" : ""}`}
-    >
-      <SectionHeader
-        title="Text"
-        subtitle="Notes, messages, contact info"
-        included={textIncluded}
-        onToggle={handleToggleText}
-        {...reorderProps("text")}
-      />
-      {textIncluded && (
-        <div className="form-group">
-          <textarea
-            id="text-input"
-            value={textValue}
-            onChange={(e) => {
-              setTextValue(e.target.value);
-              resetResult();
-            }}
-            placeholder="Type or paste anything — notes, contact info, a message..."
-            rows="5"
-            maxLength={4000}
-          />
-          <span className="char-count">
-            {textValue.length}/4000 characters
-          </span>
-        </div>
-      )}
-    </fieldset>
-  );
+  const renderBlock = (block, idx) => {
+    const isText = block.kind === "text";
+    const isImage = block.kind === "image";
+    const canMoveUp = idx > 0;
+    const canMoveDown = idx < blocks.length - 1;
 
-  const renderImageSection = () => (
-    <fieldset
-      key="image"
-      className={`barcode-section ${imageIncluded ? "active" : ""}`}
-    >
-      <SectionHeader
-        title="Image"
-        subtitle="PNG, JPG, WebP, GIF, SVG up to 2MB"
-        included={imageIncluded}
-        onToggle={handleToggleImage}
-        {...reorderProps("image")}
-      />
-      {imageIncluded && (
-        <div className="form-group">
-          {!imageDataUrl ? (
-            <div
-              className="image-dropzone"
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                handleImageFile(e.dataTransfer.files?.[0]);
-              }}
-              onClick={() => imageInputRef.current?.click()}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  imageInputRef.current?.click();
-                }
-              }}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                aria-hidden="true"
-              >
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <circle cx="9" cy="9" r="2" />
-                <path d="M21 15l-5-5L5 21" />
-              </svg>
-              <p>Click to upload or drag and drop</p>
-              <span>PNG, JPG, WebP, GIF, SVG · up to 2MB</span>
-            </div>
-          ) : (
-            <div className="image-preview">
-              <img src={imageDataUrl} alt={imageMeta?.name || "Preview"} />
-              <div className="image-meta">
-                <span className="image-name">{imageMeta?.name}</span>
-                <span className="image-size">
-                  {(imageMeta?.size / 1024).toFixed(1)} KB
-                </span>
+    return (
+      <fieldset key={block.id} className="barcode-section block-card active">
+        <div className="section-header">
+          <div className="section-title">
+            <h3>
+              <span className={`block-badge block-badge-${block.kind}`}>
+                {KIND_LABEL[block.kind]}
+              </span>
+            </h3>
+          </div>
+          <div className="section-actions">
+            {blocks.length > 1 && (
+              <div className="section-reorder" aria-label="Reorder block">
                 <button
                   type="button"
-                  className="image-remove"
-                  onClick={clearImage}
+                  className="reorder-btn"
+                  onClick={() => moveBlock(block.id, -1)}
+                  disabled={!canMoveUp}
+                  title="Move earlier"
+                  aria-label="Move block earlier"
                 >
-                  Remove
+                  ↑
                 </button>
-              </div>
-            </div>
-          )}
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept={ALLOWED_IMAGE_TYPES.join(",")}
-            onChange={(e) => handleImageFile(e.target.files?.[0])}
-            hidden
-          />
-        </div>
-      )}
-    </fieldset>
-  );
-
-  const renderVideoSection = () => (
-    <fieldset
-      key="video"
-      className={`barcode-section ${videoIncluded ? "active" : ""}`}
-    >
-      <SectionHeader
-        title="Video"
-        subtitle="MP4, WebM, OGG, MOV up to 6MB"
-        included={videoIncluded}
-        onToggle={handleToggleVideo}
-        {...reorderProps("video")}
-      />
-      {videoIncluded && (
-        <div className="form-group">
-          {!videoDataUrl ? (
-            <div
-              className="image-dropzone"
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                handleVideoFile(e.dataTransfer.files?.[0]);
-              }}
-              onClick={() => videoInputRef.current?.click()}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  videoInputRef.current?.click();
-                }
-              }}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                aria-hidden="true"
-              >
-                <polygon points="23 7 16 12 23 17 23 7" />
-                <rect x="1" y="5" width="15" height="14" rx="2" />
-              </svg>
-              <p>Click to upload or drag and drop</p>
-              <span>MP4, WebM, OGG, MOV · up to 6MB</span>
-            </div>
-          ) : (
-            <div className="image-preview">
-              <video src={videoDataUrl} muted playsInline preload="metadata" />
-              <div className="image-meta">
-                <span className="image-name">{videoMeta?.name}</span>
-                <span className="image-size">
-                  {(videoMeta?.size / (1024 * 1024)).toFixed(2)} MB
-                </span>
                 <button
                   type="button"
-                  className="image-remove"
-                  onClick={clearVideo}
+                  className="reorder-btn"
+                  onClick={() => moveBlock(block.id, 1)}
+                  disabled={!canMoveDown}
+                  title="Move later"
+                  aria-label="Move block later"
                 >
-                  Remove
+                  ↓
                 </button>
               </div>
-            </div>
-          )}
-          <input
-            ref={videoInputRef}
-            type="file"
-            accept={ALLOWED_VIDEO_TYPES.join(",")}
-            onChange={(e) => handleVideoFile(e.target.files?.[0])}
-            hidden
-          />
+            )}
+            <button
+              type="button"
+              className="block-remove-btn"
+              onClick={() => removeBlock(block.id)}
+              aria-label={`Remove ${KIND_LABEL[block.kind]} block`}
+            >
+              Remove
+            </button>
+          </div>
         </div>
-      )}
-    </fieldset>
-  );
 
-  const renderSection = (kind) => {
-    if (kind === "text") return renderTextSection();
-    if (kind === "image") return renderImageSection();
-    if (kind === "video") return renderVideoSection();
-    return null;
+        {isText && (
+          <div className="form-group">
+            <textarea
+              value={block.content}
+              onChange={(e) => updateBlock(block.id, { content: e.target.value })}
+              placeholder="Type or paste anything — notes, contact info, a message..."
+              rows="4"
+              maxLength={4000}
+            />
+            <span className="char-count">{block.content.length}/4000 characters</span>
+
+            <div className="text-color-field">
+              <span className="style-field-label">Background colour</span>
+              <div className="text-color-swatches">
+                {TEXT_BG_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className={`color-swatch ${
+                      block.bgColor?.toLowerCase() === preset.bg.toLowerCase()
+                        ? "selected"
+                        : ""
+                    }`}
+                    style={{
+                      background: preset.bg,
+                      color: getContrastText(preset.bg),
+                    }}
+                    onClick={() => updateBlock(block.id, { bgColor: preset.bg })}
+                    title={preset.label}
+                    aria-label={`${preset.label} background`}
+                  >
+                    Aa
+                  </button>
+                ))}
+                <label className="color-swatch color-swatch-custom" title="Custom colour">
+                  <input
+                    type="color"
+                    value={block.bgColor || DEFAULT_TEXT_BG}
+                    onChange={(e) =>
+                      updateBlock(block.id, { bgColor: e.target.value })
+                    }
+                    aria-label="Custom background colour"
+                  />
+                  <span aria-hidden="true">+</span>
+                </label>
+              </div>
+              <div
+                className="text-color-hint"
+                style={{
+                  background: block.bgColor || DEFAULT_TEXT_BG,
+                  color: getContrastText(block.bgColor || DEFAULT_TEXT_BG),
+                }}
+              >
+                Text stays readable on your chosen background.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isText && (
+          <div className="form-group">
+            {!block.content ? (
+              <div
+                className="image-dropzone"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  handleBlockFile(block.id, block.kind, e.dataTransfer.files?.[0]);
+                }}
+                onClick={() => fileInputs.current[block.id]?.click()}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    fileInputs.current[block.id]?.click();
+                  }
+                }}
+              >
+                {isImage ? (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <circle cx="9" cy="9" r="2" />
+                    <path d="M21 15l-5-5L5 21" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                    <polygon points="23 7 16 12 23 17 23 7" />
+                    <rect x="1" y="5" width="15" height="14" rx="2" />
+                  </svg>
+                )}
+                <p>Click to upload or drag and drop</p>
+                <span>
+                  {isImage
+                    ? "PNG, JPG, WebP, GIF, SVG · up to 2MB"
+                    : "MP4, WebM, OGG, MOV · up to 6MB"}
+                </span>
+              </div>
+            ) : (
+              <div className="image-preview">
+                {isImage ? (
+                  <img src={block.content} alt={block.meta?.name || "Preview"} />
+                ) : (
+                  <video src={block.content} muted playsInline preload="metadata" />
+                )}
+                <div className="image-meta">
+                  <span className="image-name">{block.meta?.name}</span>
+                  <span className="image-size">
+                    {isImage
+                      ? `${((block.meta?.size || 0) / 1024).toFixed(1)} KB`
+                      : `${((block.meta?.size || 0) / (1024 * 1024)).toFixed(2)} MB`}
+                  </span>
+                  <button
+                    type="button"
+                    className="image-remove"
+                    onClick={() => clearBlockFile(block.id)}
+                  >
+                    Replace
+                  </button>
+                </div>
+              </div>
+            )}
+            <input
+              ref={(el) => {
+                if (el) fileInputs.current[block.id] = el;
+              }}
+              type="file"
+              accept={(isImage ? ALLOWED_IMAGE_TYPES : ALLOWED_VIDEO_TYPES).join(",")}
+              onChange={(e) => handleBlockFile(block.id, block.kind, e.target.files?.[0])}
+              hidden
+            />
+          </div>
+        )}
+      </fieldset>
+    );
   };
 
   if (!isAdmin) {
@@ -831,9 +752,9 @@ const BarcodeGenerator = () => {
       <header className="barcode-hero">
         <h1>Barcode Generator</h1>
         <p>
-          Combine text, a link, an image, and a video into a single scannable
-          barcode. Anyone who scans it lands on a dedicated page with all of
-          your content.
+          Stack as many text notes, images, and videos as you like into a single
+          scannable barcode. Anyone who scans it lands on a dedicated page with
+          all of your content, in order.
         </p>
       </header>
 
@@ -844,7 +765,7 @@ const BarcodeGenerator = () => {
               <div className="edit-banner-text">
                 <strong>Editing /{editingSlug}</strong>
                 <span>
-                  Add, change, or remove any section — saving updates this
+                  Add, change, reorder, or remove any block — saving updates this
                   existing code.
                 </span>
               </div>
@@ -861,31 +782,79 @@ const BarcodeGenerator = () => {
 
           <div className="barcode-summary">
             <span className="summary-pill">
-              {includedCount} of 4 included
+              {urlIncluded
+                ? "Standalone link"
+                : `${includedCount} ${includedCount === 1 ? "block" : "blocks"}`}
             </span>
             <span className="summary-hint">
-              Toggle any section on or off — mix and match as you like.
+              Add multiple blocks — they appear together in the order below.
             </span>
           </div>
 
           <form className="barcode-form" onSubmit={handleGenerate}>
-            {includedKinds.length > 1 && (
-              <p className="reorder-hint">
-                Use the ↑ ↓ arrows to set the order content appears when scanned.
-              </p>
+            {!urlIncluded && (
+              <>
+                {blocks.length > 1 && (
+                  <p className="reorder-hint">
+                    Use the ↑ ↓ arrows to set the order content appears when
+                    scanned.
+                  </p>
+                )}
+
+                {blocks.map((block, idx) => renderBlock(block, idx))}
+
+                <div className="add-block-row">
+                  <span className="add-block-label">Add block</span>
+                  <div className="add-block-buttons">
+                    <button
+                      type="button"
+                      className="add-block-btn"
+                      onClick={() => addBlock("text")}
+                      disabled={blocks.length >= MAX_BLOCKS}
+                    >
+                      + Text
+                    </button>
+                    <button
+                      type="button"
+                      className="add-block-btn"
+                      onClick={() => addBlock("image")}
+                      disabled={blocks.length >= MAX_BLOCKS}
+                    >
+                      + Image
+                    </button>
+                    <button
+                      type="button"
+                      className="add-block-btn"
+                      onClick={() => addBlock("video")}
+                      disabled={blocks.length >= MAX_BLOCKS}
+                    >
+                      + Video
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
 
-            {sectionOrder.map((kind) => renderSection(kind))}
-
-            <fieldset
-              className={`barcode-section ${urlIncluded ? "active" : ""}`}
-            >
-              <SectionHeader
-                title="Link"
-                subtitle="Stands alone — scans go straight to this URL"
-                included={urlIncluded}
-                onToggle={handleToggleUrl}
-              />
+            <fieldset className={`barcode-section ${urlIncluded ? "active" : ""}`}>
+              <div className="section-header">
+                <div className="section-title">
+                  <h3>Link</h3>
+                  <span>Stands alone — scans go straight to this URL</span>
+                </div>
+                <label className="section-toggle">
+                  <input
+                    type="checkbox"
+                    checked={urlIncluded}
+                    onChange={handleToggleUrl}
+                  />
+                  <span className="toggle-track" aria-hidden="true">
+                    <span className="toggle-thumb" />
+                  </span>
+                  <span className="toggle-label">
+                    {urlIncluded ? "On" : "Use link"}
+                  </span>
+                </label>
+              </div>
               {urlIncluded && (
                 <div className="form-group">
                   <input
@@ -901,8 +870,8 @@ const BarcodeGenerator = () => {
                     autoComplete="off"
                   />
                   <span className="form-hint">
-                    A link barcode is exclusive — text, image, and video are
-                    turned off automatically.
+                    A link barcode is exclusive — content blocks are turned off
+                    while it's on.
                   </span>
                 </div>
               )}
@@ -1001,6 +970,14 @@ const BarcodeGenerator = () => {
                 Reset
               </button>
               <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setShowPreview(true)}
+                disabled={generating || previewItems.length === 0}
+              >
+                Preview
+              </button>
+              <button
                 type="submit"
                 className="btn-primary"
                 disabled={generating || includedCount === 0}
@@ -1026,16 +1003,11 @@ const BarcodeGenerator = () => {
               <div className="qr-frame">
                 <img src={result.qrDataUrl} alt="Generated barcode" />
               </div>
-              {result.label && (
-                <p className="result-label">{result.label}</p>
-              )}
+              {result.label && <p className="result-label">{result.label}</p>}
               {result.kinds?.length > 0 && (
                 <div className="result-kinds">
                   {result.kinds.map((kind, idx) => (
-                    <span
-                      key={`${kind}-${idx}`}
-                      className="result-kind-pill"
-                    >
+                    <span key={`${kind}-${idx}`} className="result-kind-pill">
                       {kind}
                     </span>
                   ))}
@@ -1048,25 +1020,13 @@ const BarcodeGenerator = () => {
                 <code>{result.scanUrl}</code>
               </div>
               <div className="result-actions">
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={handleCopyLink}
-                >
+                <button type="button" className="btn-secondary" onClick={handleCopyLink}>
                   Copy link
                 </button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={handleShare}
-                >
+                <button type="button" className="btn-secondary" onClick={handleShare}>
                   Share
                 </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={handleDownload}
-                >
+                <button type="button" className="btn-primary" onClick={handleDownload}>
                   Download PNG
                 </button>
               </div>
@@ -1078,13 +1038,7 @@ const BarcodeGenerator = () => {
           ) : (
             <div className="result-empty">
               <div className="result-empty-icon">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  aria-hidden="true"
-                >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
                   <rect x="3" y="3" width="7" height="7" rx="1" />
                   <rect x="14" y="3" width="7" height="7" rx="1" />
                   <rect x="3" y="14" width="7" height="7" rx="1" />
@@ -1093,8 +1047,8 @@ const BarcodeGenerator = () => {
               </div>
               <h3>Your barcode will appear here</h3>
               <p>
-                Toggle any combination of text, link, image, or video, fill
-                them in, and generate. You'll get a downloadable code and a
+                Stack any mix of text, images, and videos — or use a standalone
+                link. Preview it, then generate a downloadable code and a
                 shareable link.
               </p>
             </div>
@@ -1133,10 +1087,7 @@ const BarcodeGenerator = () => {
                   </span>
                   <div className="history-kinds">
                     {(entry.kinds || []).map((kind, idx) => (
-                      <span
-                        key={`${kind}-${idx}`}
-                        className="history-kind-pill"
-                      >
+                      <span key={`${kind}-${idx}`} className="history-kind-pill">
                         {kind}
                       </span>
                     ))}
@@ -1193,6 +1144,95 @@ const BarcodeGenerator = () => {
         )}
       </section>
 
+      {showPreview && (
+        <div
+          className="preview-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Barcode content preview"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowPreview(false);
+          }}
+        >
+          <div className="preview-modal">
+            <div className="preview-modal-head">
+              <div>
+                <h3>Content preview</h3>
+                <span>What people see after they scan</span>
+              </div>
+              <button
+                type="button"
+                className="preview-close"
+                onClick={() => setShowPreview(false)}
+                aria-label="Close preview"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="preview-phone">
+              <div className="preview-screen">
+                {urlIncluded ? (
+                  <div className="preview-stage preview-stage-url">
+                    <div className="preview-link-card">
+                      <span className="preview-link-eyebrow">Link</span>
+                      <p className="preview-link-url">
+                        {urlValue.trim() || "https://example.com"}
+                      </p>
+                      <span className="preview-link-btn">Open link</span>
+                      <p className="preview-redirect-note">
+                        A standalone link redirects immediately — no page is shown.
+                      </p>
+                    </div>
+                  </div>
+                ) : previewItems.length ? (
+                  previewItems.map((item, idx) => {
+                    if (item.kind === "text") {
+                      const bg = item.bgColor || DEFAULT_TEXT_BG;
+                      return (
+                        <div
+                          key={idx}
+                          className="preview-stage preview-stage-text"
+                        >
+                          <div
+                            className="preview-note-card"
+                            style={{ background: bg, color: getContrastText(bg) }}
+                          >
+                            <p>{item.content}</p>
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (item.kind === "image") {
+                      return (
+                        <div key={idx} className="preview-stage preview-stage-media">
+                          <img src={item.content} alt="Preview" />
+                        </div>
+                      );
+                    }
+                    if (item.kind === "video") {
+                      return (
+                        <div key={idx} className="preview-stage preview-stage-media">
+                          <video src={item.content} controls muted playsInline preload="metadata" />
+                        </div>
+                      );
+                    }
+                    return null;
+                  })
+                ) : (
+                  <div className="preview-empty">Add content to preview</div>
+                )}
+              </div>
+            </div>
+
+            <p className="preview-foot">
+              Scroll inside the phone to see each block. This is a close
+              approximation of the live scan page.
+            </p>
+          </div>
+        </div>
+      )}
+
       {pendingDelete && (
         <div
           className="confirm-overlay"
@@ -1208,11 +1248,9 @@ const BarcodeGenerator = () => {
           <div className="confirm-modal">
             <h3 id="confirm-delete-title">Delete this barcode?</h3>
             <p>
-              <strong>
-                {pendingDelete.label || "Untitled barcode"}
-              </strong>{" "}
-              will be removed permanently. Anyone who scans the code afterwards
-              will see a "not found" message.
+              <strong>{pendingDelete.label || "Untitled barcode"}</strong> will be
+              removed permanently. Anyone who scans the code afterwards will see a
+              "not found" message.
             </p>
             <div className="confirm-actions">
               <button

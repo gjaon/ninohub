@@ -16,6 +16,14 @@ const barcodeItemSchema = mongoose.Schema(
       trim: true,
       default: "",
     },
+    // Background colour for a text note (hex, e.g. "#dc2626"). The scan view
+    // derives the matching text colour from this, so only the background is
+    // stored. Empty for non-text items.
+    bgColor: {
+      type: String,
+      trim: true,
+      default: "",
+    },
   },
   { _id: false }
 );

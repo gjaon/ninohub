@@ -6,8 +6,24 @@ const SLUG_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 const MAX_TEXT_LENGTH = 4000;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
-const MAX_ITEMS = 4;
+const MAX_ITEMS = 12;
 const ALLOWED_KINDS = new Set(["text", "url", "image", "video"]);
+const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+// Normalise a caller-supplied background colour to "#rrggbb" or "" if invalid.
+const normalizeHexColor = (value) => {
+  const raw = String(value || "").trim();
+  if (!HEX_COLOR_RE.test(raw)) return "";
+  const hex = raw.replace(/^#/, "");
+  const full =
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((ch) => ch + ch)
+          .join("")
+      : hex;
+  return `#${full.toLowerCase()}`;
+};
 const ALLOWED_IMAGE_MIME = new Set([
   "image/png",
   "image/jpeg",
@@ -67,7 +83,7 @@ const validateItem = (item) => {
     if (content.length > MAX_TEXT_LENGTH) {
       throw new Error(`Text must be ${MAX_TEXT_LENGTH} characters or fewer`);
     }
-    return { kind, content, mimeType: "" };
+    return { kind, content, mimeType: "", bgColor: normalizeHexColor(item.bgColor) };
   }
 
   if (kind === "url") {
@@ -225,6 +241,7 @@ const getBarcode = asyncHandler(async (req, res) => {
         kind: item.kind,
         content: item.content,
         mimeType: item.mimeType,
+        bgColor: item.bgColor || "",
       })),
       createdAt: barcode.createdAt,
     },

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { fetchBarcode } from "../services/barcodes";
+import { getContrastText, DEFAULT_TEXT_BG } from "../utils/textContrast";
 import "./ScanView.css";
 
 // Immersive video block. We try to autoplay WITH sound first; browsers usually
@@ -101,13 +102,17 @@ const ScanImage = ({ src }) => {
   );
 };
 
-const ScanNote = ({ content }) => (
-  <div className="scan-note">
-    <div className="scan-note-card">
-      <p>{content}</p>
+const ScanNote = ({ content, bgColor }) => {
+  const bg = bgColor || DEFAULT_TEXT_BG;
+  const color = getContrastText(bg);
+  return (
+    <div className="scan-note">
+      <div className="scan-note-card" style={{ background: bg, color }}>
+        <p>{content}</p>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const ScanLink = ({ content }) => (
   <div className="scan-link-block">
@@ -281,7 +286,7 @@ const ScanView = () => {
     }
     if (item.kind === "image") return <ScanImage src={item.content} />;
     if (item.kind === "url") return <ScanLink content={item.content} />;
-    return <ScanNote content={item.content} />;
+    return <ScanNote content={item.content} bgColor={item.bgColor} />;
   };
 
   if (status === "loading") {
