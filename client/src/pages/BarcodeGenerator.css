@@ -116,6 +116,85 @@
   color: var(--color-text-muted);
 }
 
+.barcode-page .capacity-meter {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-soft);
+}
+
+.barcode-page .capacity-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.barcode-page .capacity-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.barcode-page .capacity-value {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.barcode-page .capacity-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-border-soft);
+  overflow: hidden;
+}
+
+.barcode-page .capacity-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-brand-500);
+  transition: width 180ms ease;
+}
+
+.barcode-page .capacity-hint {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.barcode-page .image-dropzone.is-uploading {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+.barcode-page .image-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--color-brand-900);
+  background: #eef7ee;
+  border: 1px solid #bcdcbc;
+}
+
+.barcode-page .capacity-meter.over {
+  border-color: #f0b4b4;
+  background: #fdf3f3;
+}
+
+.barcode-page .capacity-meter.over .capacity-fill {
+  background: #d64545;
+}
+
+.barcode-page .capacity-meter.over .capacity-hint,
+.barcode-page .capacity-meter.over .capacity-value {
+  color: #b23b3b;
+  font-weight: 600;
+}
+
 .barcode-page .barcode-form {
   display: grid;
   gap: 14px;

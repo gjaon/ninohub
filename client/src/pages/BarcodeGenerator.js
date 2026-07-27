@@ -8,6 +8,7 @@ import {
   fetchBarcode,
   listBarcodes,
   updateBarcode,
+  uploadBarcodeMedia,
 } from "../services/barcodes";
 import {
   renderShapedQrDataUrl,
@@ -24,6 +25,12 @@ import "./BarcodeGenerator.css";
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
 const MAX_BLOCKS = 12;
+// Total budget for one barcode, measured on the base64 data URLs actually sent
+// and stored (~33% larger than the source files). Per-file limits alone let a
+// legal set of blocks add up to more than the request body and MongoDB document
+// limits allow, which failed late with an opaque "too large" error.
+// Keep in sync with MAX_TOTAL_BYTES in controllers/barcodeController.js.
+const MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",
@@ -57,6 +64,12 @@ const makeBlock = (kind, overrides = {}) => ({
   mimeType: "",
   bgColor: kind === "text" ? DEFAULT_TEXT_BG : "",
   meta: null,
+  // "s3" once the file has been uploaded and `content` holds its URL; "inline"
+  // while the file is embedded as a base64 data URL (the fallback when the
+  // server has no storage configured). Only inline media counts against the
+  // shared size budget.
+  storage: "inline",
+  storageKey: "",
   ...overrides,
 });
 
@@ -71,6 +84,29 @@ const approxBytesFromDataUrl = (dataUrl) => {
   const base64 = comma >= 0 ? value.slice(comma + 1) : value;
   return Math.floor((base64.length * 3) / 4);
 };
+
+const formatBytes = (bytes) => {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(value > 0 ? 1 : 0, Math.round(value / 1024))} KB`;
+};
+
+// Size a block contributes to the barcode document. Uploaded media costs only
+// its URL; inline media is a base64 data URL (ASCII, so one char per byte);
+// text is UTF-8 and short enough to measure exactly.
+const blockBytes = (block) => {
+  const content = String(block?.content || "");
+  if (!content) return 0;
+  if (block.kind === "text") {
+    return typeof TextEncoder !== "undefined"
+      ? new TextEncoder().encode(content).length
+      : content.length;
+  }
+  return content.length;
+};
+
+const isInlineMedia = (block) =>
+  block?.kind !== "text" && block?.storage !== "s3";
 
 const readFileAsDataUrl = (file) =>
   new Promise((resolve, reject) => {
@@ -117,6 +153,9 @@ const BarcodeGenerator = () => {
   const [editingSlug, setEditingSlug] = useState(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
 
+  // Block ids with an upload in flight.
+  const [uploading, setUploading] = useState({});
+
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
@@ -125,6 +164,35 @@ const BarcodeGenerator = () => {
 
   // Hidden file inputs, one per media block, keyed by block id.
   const fileInputs = useRef({});
+
+  // Bytes that end up inside the barcode document: text, plus any media still
+  // embedded as base64. Uploaded files live in storage and cost only a URL, so
+  // they don't consume the budget.
+  const inlineBytes = useMemo(
+    () =>
+      urlIncluded
+        ? 0
+        : blocks.reduce(
+            (sum, b) => sum + (b.storage === "s3" ? 0 : blockBytes(b)),
+            0
+          ),
+    [blocks, urlIncluded]
+  );
+  // Actual file size of everything uploaded — shown for information only.
+  const uploadedBytes = useMemo(
+    () =>
+      urlIncluded
+        ? 0
+        : blocks.reduce(
+            (sum, b) => sum + (b.storage === "s3" ? Number(b.meta?.size) || 0 : 0),
+            0
+          ),
+    [blocks, urlIncluded]
+  );
+  const hasInlineMedia = !urlIncluded && blocks.some(isInlineMedia);
+  const isUploading = Object.keys(uploading).length > 0;
+  const overBudget = inlineBytes > MAX_TOTAL_BYTES;
+  const usedPercent = Math.min(100, (inlineBytes / MAX_TOTAL_BYTES) * 100);
 
   const scanOrigin = useMemo(() => {
     const configured = (process.env.REACT_APP_SCAN_ORIGIN || "").trim();
@@ -267,21 +335,79 @@ const BarcodeGenerator = () => {
       );
       return;
     }
+    const meta = { name: file.name, size: file.size, type: file.type };
+
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      updateBlock(id, {
-        content: dataUrl,
-        mimeType: file.type,
-        meta: { name: file.name, size: file.size, type: file.type },
-      });
+
+      // Upload straight away so the file lives in storage and the barcode
+      // itself only carries a URL. One request per file means a barcode's media
+      // never has to fit in a single request body or a single document.
+      setUploading((rows) => ({ ...rows, [id]: true }));
+      try {
+        const response = await uploadBarcodeMedia({
+          dataUrl,
+          kind,
+          fileName: file.name,
+        });
+        updateBlock(id, {
+          content: response?.data?.url,
+          mimeType: response?.data?.mimeType || file.type,
+          storage: "s3",
+          storageKey: response?.data?.storageKey || "",
+          meta,
+        });
+        return;
+      } catch (error) {
+        if (!error.storageDisabled) throw error;
+        // No storage configured — embed the file instead. That reimposes the
+        // shared budget, so check it before accepting the file.
+        const otherBytes = blocks.reduce(
+          (sum, b) => sum + (b.id === id || b.storage === "s3" ? 0 : blockBytes(b)),
+          0
+        );
+        const nextTotal = otherBytes + String(dataUrl).length;
+        if (nextTotal > MAX_TOTAL_BYTES) {
+          toast.error(
+            `That ${kind} pushes this barcode to ${formatBytes(
+              nextTotal
+            )}, over the ${formatBytes(
+              MAX_TOTAL_BYTES
+            )} limit. Remove another item or use a smaller file.`
+          );
+          if (fileInputs.current[id]) fileInputs.current[id].value = "";
+          return;
+        }
+        updateBlock(id, {
+          content: dataUrl,
+          mimeType: file.type,
+          storage: "inline",
+          storageKey: "",
+          meta,
+        });
+      }
     } catch (error) {
       toast.error(error.message || "Could not load file");
+    } finally {
+      setUploading((rows) => {
+        const next = { ...rows };
+        delete next[id];
+        return next;
+      });
     }
   };
 
   const clearBlockFile = (id) => {
     if (fileInputs.current[id]) fileInputs.current[id].value = "";
-    updateBlock(id, { content: "", mimeType: "", meta: null });
+    // The uploaded object stays in storage until the barcode is saved without
+    // it — the server removes whatever the new version no longer references.
+    updateBlock(id, {
+      content: "",
+      mimeType: "",
+      storage: "inline",
+      storageKey: "",
+      meta: null,
+    });
   };
 
   const handleToggleUrl = () => {
@@ -317,10 +443,16 @@ const BarcodeGenerator = () => {
         setUrlValue("");
         const loaded = items
           .filter((item) => ["text", "image", "video"].includes(item.kind))
-          .map((item) =>
-            makeBlock(item.kind, {
-              content: item.content || "",
+          .map((item) => {
+            const content = item.content || "";
+            // Media already in storage comes back as a URL; older barcodes
+            // still carry their base64 inline.
+            const stored = /^https?:\/\//i.test(content);
+            return makeBlock(item.kind, {
+              content,
               mimeType: item.mimeType || "",
+              storage: stored ? "s3" : "inline",
+              storageKey: item.storageKey || "",
               bgColor:
                 item.kind === "text"
                   ? item.bgColor || DEFAULT_TEXT_BG
@@ -329,12 +461,12 @@ const BarcodeGenerator = () => {
                 item.kind === "image" || item.kind === "video"
                   ? {
                       name: `Current ${item.kind}`,
-                      size: approxBytesFromDataUrl(item.content),
+                      size: stored ? 0 : approxBytesFromDataUrl(content),
                       type: item.mimeType || "",
                     }
                   : null,
-            })
-          );
+            });
+          });
         setBlocks(loaded.length ? loaded : [makeBlock("text")]);
       }
 
@@ -389,23 +521,39 @@ const BarcodeGenerator = () => {
           content: trimmed,
           bgColor: block.bgColor || DEFAULT_TEXT_BG,
         });
-      } else if (block.kind === "image") {
+      } else if (block.kind === "image" || block.kind === "video") {
         if (!block.content) {
-          toast.error("Choose an image or remove the image block");
+          toast.error(
+            block.kind === "image"
+              ? "Choose an image or remove the image block"
+              : "Choose a video or remove the video block"
+          );
           return null;
         }
-        items.push({ kind: "image", content: block.content });
-      } else if (block.kind === "video") {
-        if (!block.content) {
-          toast.error("Choose a video or remove the video block");
-          return null;
-        }
-        items.push({ kind: "video", content: block.content });
+        // storageKey lets the server match an unchanged item to the object it
+        // already holds, instead of treating it as new and orphaning the old.
+        items.push({
+          kind: block.kind,
+          content: block.content,
+          mimeType: block.mimeType || "",
+          storageKey: block.storageKey || "",
+        });
       }
     }
 
     if (!items.length) {
       toast.error("Add at least one block of content");
+      return null;
+    }
+
+    // Backstop for content that never went through the uploader (an edited
+    // barcode loaded from the server, a long text block).
+    if (overBudget) {
+      toast.error(
+        `This barcode holds ${formatBytes(inlineBytes)}, over the ${formatBytes(
+          MAX_TOTAL_BYTES
+        )} limit. Remove or shrink an item and try again.`
+      );
       return null;
     }
     return items;
@@ -652,7 +800,12 @@ const BarcodeGenerator = () => {
 
         {!isText && (
           <div className="form-group">
-            {!block.content ? (
+            {uploading[block.id] ? (
+              <div className="image-dropzone is-uploading" aria-busy="true">
+                <p>Uploading {block.kind}…</p>
+                <span>{block.kind === "video" ? "Videos can take a moment" : "Almost there"}</span>
+              </div>
+            ) : !block.content ? (
               <div
                 className="image-dropzone"
                 onDragOver={(e) => e.preventDefault()}
@@ -699,10 +852,17 @@ const BarcodeGenerator = () => {
                 <div className="image-meta">
                   <span className="image-name">{block.meta?.name}</span>
                   <span className="image-size">
-                    {isImage
-                      ? `${((block.meta?.size || 0) / 1024).toFixed(1)} KB`
-                      : `${((block.meta?.size || 0) / (1024 * 1024)).toFixed(2)} MB`}
+                    {block.meta?.size
+                      ? formatBytes(block.meta.size)
+                      : block.storage === "s3"
+                      ? "Stored"
+                      : ""}
                   </span>
+                  {block.storage === "s3" && (
+                    <span className="image-badge" title="Uploaded to file storage">
+                      Uploaded
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="image-remove"
@@ -790,6 +950,45 @@ const BarcodeGenerator = () => {
               Add multiple blocks — they appear together in the order below.
             </span>
           </div>
+
+          {!urlIncluded && (uploadedBytes > 0 || hasInlineMedia) && (
+            <div className={`capacity-meter ${overBudget ? "over" : ""}`}>
+              <div className="capacity-head">
+                <span className="capacity-label">
+                  {hasInlineMedia ? "Barcode capacity" : "Media"}
+                </span>
+                <span className="capacity-value">
+                  {hasInlineMedia
+                    ? `${formatBytes(inlineBytes)} of ${formatBytes(
+                        MAX_TOTAL_BYTES
+                      )}`
+                    : `${formatBytes(uploadedBytes)} uploaded`}
+                </span>
+              </div>
+              {hasInlineMedia && (
+                <div
+                  className="capacity-track"
+                  role="progressbar"
+                  aria-valuenow={Math.round(usedPercent)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label="Barcode capacity used"
+                >
+                  <span
+                    className="capacity-fill"
+                    style={{ width: `${usedPercent}%` }}
+                  />
+                </div>
+              )}
+              <span className="capacity-hint">
+                {overBudget
+                  ? "Over the limit — remove or shrink an item to generate."
+                  : hasInlineMedia
+                  ? "File storage is unavailable, so media is stored inside the code and counts against this budget."
+                  : "Files are uploaded to storage, so there's no shared size limit — only the per-file caps."}
+              </span>
+            </div>
+          )}
 
           <form className="barcode-form" onSubmit={handleGenerate}>
             {!urlIncluded && (
@@ -980,7 +1179,16 @@ const BarcodeGenerator = () => {
               <button
                 type="submit"
                 className="btn-primary"
-                disabled={generating || includedCount === 0}
+                disabled={
+                  generating || includedCount === 0 || overBudget || isUploading
+                }
+                title={
+                  overBudget
+                    ? `Over the ${formatBytes(MAX_TOTAL_BYTES)} limit`
+                    : isUploading
+                    ? "Waiting for uploads to finish"
+                    : undefined
+                }
               >
                 {generating
                   ? editingSlug
@@ -1094,6 +1302,7 @@ const BarcodeGenerator = () => {
                   </div>
                   <span className="history-meta">
                     {formatRelative(entry.createdAt)} · /{entry.slug}
+                    {entry.bytes ? ` · ${formatBytes(entry.bytes)}` : ""}
                   </span>
                 </div>
                 <div className="history-actions">
