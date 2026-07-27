@@ -8,10 +8,13 @@ const {
   getBarcode,
   listBarcodes,
   deleteBarcode,
+  uploadBarcodeMedia,
 } = require("../controllers/barcodeController");
 
 router.get("/", protect, requireAdmin, listBarcodes);
 router.post("/", protect, requireAdmin, createBarcode);
+// Declared before "/:slug" routes so "uploads" is never read as a slug.
+router.post("/uploads", protect, requireAdmin, uploadBarcodeMedia);
 router.get("/:slug", getBarcode);
 router.put("/:slug", protect, requireAdmin, updateBarcode);
 router.delete("/:slug", protect, requireAdmin, deleteBarcode);

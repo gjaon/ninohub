@@ -19,6 +19,7 @@
   "author": "Jcodes",
   "license": "ISC",
   "dependencies": {
+    "aws-sdk": "^2.1693.0",
     "axios": "^1.13.5",
     "bcryptjs": "^3.0.3",
     "body-parser": "^2.2.0",

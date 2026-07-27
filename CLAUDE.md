@@ -34,6 +34,7 @@ Smoke / latency benchmark (root): `node scripts/smoke-latency-benchmark.js`.
 - Enabling any of `publicApiEnabled` / `webhooksEnabled` / `internalUiEnabled` forces `PUBLIC_PARTNER_JWT_SECRET` and `MARKETPLACE_SECRET_ENCRYPTION_KEY` to be set.
 - Admin authorization is allowlist-driven: `ADMIN_EMAIL_ALLOWLIST` (comma-separated emails) — see `utils/adminAccess.js`. The `requireAdmin` middleware checks `req.user.email` against this list, not a DB role.
 - Frontend reads `REACT_APP_API_URL` (axios base in `client/src/services/api.js`) and `REACT_APP_SERVER_URL` (socket URL in `client/src/services/socket.js`). Both default to a hardcoded fallback — set them explicitly for non-default ports.
+- S3 asset storage (`utils/s3bucket.js`, ported from the sibling SellSquare repo and sharing its bucket) needs `AWS_BUCKET_NAME`, `AWS_BUCKET_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. `isS3Configured()` gates every call site — without all four, barcode media falls back to base64 inside the document. The IAM user needs `s3:PutObject`, `s3:GetObject` **and `s3:DeleteObject`** (without delete, replaced media is orphaned in the bucket).
 
 ## Authentication
 
@@ -47,6 +48,9 @@ CORS: `server.js` builds an allowlist from a hardcoded dev list + `CLIENT_ORIGIN
 The Socket.io layer in `server.js` is the primary cart/product surface — not the REST routes. The `/api/cart/*` routes exist, but the React client drives cart state via socket events (`cart:add`, `cart:remove`, `cart:updateQuantity`, `cart:updateVariant`, `cart:sync`, `cart:startCheckout`, `cart:cancelCheckout`, `cart:addCustomization`) and receives `cart:updated` / `cart:synced` / `cart:error` back. Products are pushed via `products:sync` ↔ `products:synced` and an `inventory:updated` broadcast that the client debounces into a resync. `business:event` is the generic envelope for marketplace domain events; `socket.userId` rooms are `buyer:<id>`, guests use `session:<sessionId>`.
 
 When editing cart flow, also touch `utils/cartLineUtils.js` (line keys, totals, variant switching) and `utils/cartReservation.js` (5-min cart timer, 3-min checkout timer, stock reservation, expiry cleanup loop). Stock holds live on `productModel.js` instance methods (`reserveQuantity`, `releaseReservation`, `updateReservationStatus`, static `cleanupExpiredReservations`).
+
+### Barcode media storage
+`controllers/barcodeController.js` + `services/barcodeStorage.js`. Media is uploaded one file per request to `POST /api/barcodes/uploads`, which returns an S3 URL; the create/update payload then carries only URLs, so a barcode's files never share a request body or a document. `validateItem` accepts either a base64 data URL (uploaded server-side, or kept inline when S3 is off) or a URL that `isOwnStorageUrl()` confirms is an object in our own bucket — never an arbitrary host. `MAX_TOTAL_BYTES` (10MB) applies only in the inline fallback, since that is the mode where media counts against the 16MB BSON document limit. Updates and deletes release orphaned objects via `orphanedKeys`/`releaseKeys`.
 
 ### Marketplace integration
 `services/marketplace/` is a self-contained subsystem that talks to an external provider (`MARKETPLACE_INTEGRATION_BASE_URL`, default `localhost:4000`; in dev this is typically the sibling `SellSquare` repo) over signed-token auth. The integration path layout is normalized in `config/marketplaceConfig.js` (`integrationBasePath` + `/listings`, `/holds`, `/orders`, `/auth/token`, `/auth/token/refresh`, `/webhooks/endpoints`).
