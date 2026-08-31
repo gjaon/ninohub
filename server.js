@@ -122,7 +122,7 @@ const emitInventoryUpdatedCoalesced = ({ io, reason = "unknown" }) => {
 // Middlewares
 app.use(
   express.json({
-    limit: "12mb",
+    limit: "20mb",
     verify: (req, _res, buffer) => {
       req.rawBody = buffer;
     },
@@ -130,7 +130,7 @@ app.use(
 );
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false }));
-app.use(bodyParser.json({ limit: "12mb" }));
+app.use(bodyParser.json({ limit: "20mb" }));
 const isProduction =
   process.env.NODE_ENV === "production" ||
   process.env.NODE_ENV === "staging";

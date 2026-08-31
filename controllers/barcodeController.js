@@ -14,12 +14,12 @@ const {
 const SLUG_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 const MAX_TEXT_LENGTH = 4000;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
 const MAX_ITEMS = 12;
 
 // Total budget for one barcode, measured on the *stored* payload (base64 data
 // URLs, ~33% larger than the source file). Per-item limits alone are not enough:
-// 12 items were individually legal but collectively blew past both the 12mb
+// 12 items were individually legal but collectively blew past both the 20mb
 // express.json() limit (a 413 before any handler ran) and MongoDB's hard 16MB
 // per-document BSON limit. 10MB leaves headroom for JSON overhead under both.
 // Keep in sync with MAX_TOTAL_BYTES in client/src/pages/BarcodeGenerator.js.
@@ -147,7 +147,7 @@ const validateItem = (item) => {
       throw new Error("Unsupported video type");
     }
     if (approxBytes > MAX_VIDEO_BYTES) {
-      throw new Error("Video is larger than 6MB limit");
+      throw new Error("Video is larger than 12MB limit");
     }
   }
 
