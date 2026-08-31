@@ -23,7 +23,7 @@ import {
 import "./BarcodeGenerator.css";
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
 const MAX_BLOCKS = 12;
 // Total budget for one barcode, measured on the base64 data URLs actually sent
 // and stored (~33% larger than the source files). Per-file limits alone let a
@@ -331,7 +331,7 @@ const BarcodeGenerator = () => {
     }
     if (file.size > maxBytes) {
       toast.error(
-        kind === "image" ? "Image must be under 2MB" : "Video must be under 6MB"
+        kind === "image" ? "Image must be under 2MB" : "Video must be under 12MB"
       );
       return;
     }
@@ -839,7 +839,7 @@ const BarcodeGenerator = () => {
                 <span>
                   {isImage
                     ? "PNG, JPG, WebP, GIF, SVG · up to 2MB"
-                    : "MP4, WebM, OGG, MOV · up to 6MB"}
+                    : "MP4, WebM, OGG, MOV · up to 12MB"}
                 </span>
               </div>
             ) : (

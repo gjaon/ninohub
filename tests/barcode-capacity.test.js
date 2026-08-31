@@ -54,7 +54,7 @@ const dataUrlOfSize = (mimeType, bytes) =>
 
 test("rejects a set of individually-legal media items that exceed the total budget", () => {
   const res = makeRes();
-  // Two videos, each under the 6MB per-file cap, together over the total.
+  // Two videos, each under the 12MB per-file cap, together over the total.
   const items = [
     { kind: "video", content: dataUrlOfSize("video/mp4", 6 * 1024 * 1024) },
     { kind: "video", content: dataUrlOfSize("video/mp4", 6 * 1024 * 1024) },
